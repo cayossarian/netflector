@@ -287,6 +287,24 @@ fn socket(family: c_int, ty: c_int, protocol: c_int) -> io::Result<OwnedFd> {
     owned_fd_from(unsafe { libc::socket(family, ty, protocol) })
 }
 
+/// A socket failure other than a missing stack (fd pressure, say) reads as yes, left for the
+/// caller's own attempt to report.
+pub(crate) fn has_ipv6() -> bool {
+    !matches!(
+        open_socket(libc::AF_INET6, libc::SOCK_DGRAM, 0),
+        Err(e) if no_ipv6_stack(&e)
+    )
+}
+
+/// The socket was refused because the host has no IPv6: a kernel built without it, booted with
+/// `ipv6.disable=1`, or a jail without it.
+pub(crate) fn no_ipv6_stack(e: &io::Error) -> bool {
+    matches!(
+        e.raw_os_error(),
+        Some(libc::EAFNOSUPPORT | libc::EPROTONOSUPPORT)
+    )
+}
+
 /// `bind` `fd` to `addr`:`port`, with `scope_id` as [`sockaddr_for`] applies it.
 ///
 /// # Errors
@@ -478,6 +496,16 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use super::*;
+
+    #[test]
+    fn only_a_missing_ipv6_stack_reads_as_no_ipv6() {
+        let of = io::Error::from_raw_os_error;
+        assert!(no_ipv6_stack(&of(libc::EAFNOSUPPORT)));
+        assert!(no_ipv6_stack(&of(libc::EPROTONOSUPPORT)));
+        // Pressure errnos are not a missing stack.
+        assert!(!no_ipv6_stack(&of(libc::EMFILE)));
+        assert!(!no_ipv6_stack(&of(libc::ENOBUFS)));
+    }
 
     #[test]
     fn sockaddr_for_v4_marshals_a_sockaddr_in() {

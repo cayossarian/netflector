@@ -29,6 +29,7 @@ use serde::Deserialize;
 use self::conflict::check_conflicts;
 use self::raw::{RawConfig, RawReflector};
 use crate::net::mac::MacSet;
+use crate::unique_list::{ListRule, UniqueList};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Wol {
@@ -236,6 +237,44 @@ impl Config {
         raw.merge_env(env::parse_env(env)?)?;
         Config::try_from(raw)
     }
+
+    /// For a host without IPv6: an entry on the default family becomes IPv4-only and drops its
+    /// IPv6 relay groups and peers, leaving an entry the validation would accept. `dual` and
+    /// `ipv6` entries ask for IPv6 outright and still fail to build.
+    ///
+    /// # Errors
+    /// [`ConfigError::Ipv6OnlyRelay`] or [`ConfigError::Ipv6OnlyPeers`]: without its IPv6
+    /// addresses the entry has nowhere left to send.
+    pub(crate) fn fall_back_to_ipv4(&mut self) -> Result<(), ConfigError> {
+        for reflector in &mut self.reflectors {
+            if reflector.address_family != AddressFamily::Default {
+                continue;
+            }
+            reflector.address_family = AddressFamily::Ipv4;
+            if let Some(udp) = &mut reflector.udp
+                && let Some(groups) = &udp.groups
+            {
+                udp.groups = ipv4_part(groups);
+                if udp.groups.is_none() && !udp.broadcast {
+                    return Err(ConfigError::Ipv6OnlyRelay {
+                        name: reflector.name.clone(),
+                    });
+                }
+            }
+            for (field, peers) in [
+                ("source_peers", &mut reflector.source_peers),
+                ("target_peers", &mut reflector.target_peers),
+            ] {
+                if let Some(list) = peers {
+                    *peers = Some(ipv4_part(list).ok_or_else(|| ConfigError::Ipv6OnlyPeers {
+                        name: reflector.name.clone(),
+                        field,
+                    })?);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl TryFrom<RawConfig> for Config {
@@ -270,6 +309,12 @@ impl TryFrom<RawConfig> for Config {
             reflectors,
         })
     }
+}
+
+/// `None` when every address is IPv6.
+fn ipv4_part<R: ListRule<Item = IpAddr>>(list: &UniqueList<R>) -> Option<UniqueList<R>> {
+    let v4: Vec<IpAddr> = list.iter().copied().filter(IpAddr::is_ipv4).collect();
+    (!v4.is_empty()).then(|| UniqueList::try_from(v4).expect("a subset of a valid list"))
 }
 
 /// One year. Beyond this is a typo, and a value large enough to overflow the reporter's
