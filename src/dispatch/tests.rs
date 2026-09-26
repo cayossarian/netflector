@@ -104,6 +104,31 @@ fn reconcile_counts_a_recovery_on_the_interface_captures() -> io::Result<()> {
     Ok(())
 }
 
+// Some address changes come with no notification: a BSD address finishing duplicate address
+// detection, say. The cached addresses are knocked out behind the monitor's back; the periodic
+// re-read must bring back what the kernel has.
+#[test]
+#[cfg_attr(miri, ignore = "resolves a real interface")]
+fn a_periodic_reread_picks_up_an_unannounced_address_change() -> io::Result<()> {
+    let mut reactor = Reactor::new()?;
+    let mut dispatcher = PacketDispatcher::new();
+    let key = dispatcher.table.find_or_add_interface(LOOPBACK_IFACE)?;
+    let capture = dispatcher.table.add_test_capture(); // links the first interface
+    let kernel = *dispatcher
+        .table
+        .egress_addrs(capture)
+        .expect("the test capture links the loopback");
+    assert_eq!(kernel.v4(), Some(Ipv4Addr::LOCALHOST));
+    dispatcher
+        .table
+        .set_test_addrs(key, InterfaceAddresses::default());
+
+    dispatcher.on_deadline(Instant::now() + Duration::from_secs(3600), &mut reactor);
+
+    assert_eq!(dispatcher.table.egress_addrs(capture), Some(&kernel));
+    Ok(())
+}
+
 fn packet(
     source: &str,
     dest: &str,

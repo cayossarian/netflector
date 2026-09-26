@@ -1,7 +1,7 @@
 //! Interface lifecycle: keeping the table current as addresses change and as the kernel destroys
-//! and recreates interfaces. The monitor drain refreshes what a notification names; the reconcile
-//! re-points a stale entry at its name's current interface (or parks it absent) and re-binds its
-//! captures in place.
+//! and recreates interfaces. The monitor drain refreshes what a notification names, and a periodic
+//! re-read catches what none announces; the reconcile re-points a stale entry at its name's
+//! current interface (or parks it absent) and re-binds its captures in place.
 
 use std::os::fd::RawFd;
 use std::time::{Duration, Instant};
@@ -19,7 +19,12 @@ pub(super) const RECONCILE_TICK: Duration = Duration::from_secs(30);
 /// The reconcile cadence while an interface is parked absent or a rebuild step failed.
 pub(super) const RECONCILE_RETRY: Duration = Duration::from_secs(1);
 
-/// What a monitor drain found, as the captures on the interfaces concerned.
+/// Some address changes come with no notification: a BSD address finishing duplicate address
+/// detection or reaching the end of its lifetime, a MAC change on a BSD virtual interface, a
+/// macOS route socket overflowing without saying so.
+pub(super) const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// What a monitor drain or a re-read found, as the captures on the interfaces concerned.
 #[derive(Default)]
 pub(super) struct Changes {
     /// The interface moved (or failed to re-resolve) its IPv4 address; DIAL proxies bind v4.
@@ -43,6 +48,7 @@ pub(super) struct InterfaceLifecycle {
     /// at or below this is churn on an unwatched interface, not a creation.
     max_seen_ifindex: u32,
     next_reconcile: Instant,
+    next_recheck: Instant,
 }
 
 impl InterfaceLifecycle {
@@ -53,6 +59,7 @@ impl InterfaceLifecycle {
             monitor: open_monitor(),
             max_seen_ifindex: 0,
             next_reconcile: Instant::now() + RECONCILE_TICK,
+            next_recheck: Instant::now() + RECHECK_INTERVAL,
         }
     }
 
@@ -70,6 +77,38 @@ impl InterfaceLifecycle {
 
     pub(super) fn reconcile_now(&mut self) {
         self.next_reconcile = Instant::now();
+    }
+
+    pub(super) fn next_recheck(&self) -> Instant {
+        self.next_recheck
+    }
+
+    /// A failed read keeps the last-known addresses: nothing says they moved, and the next pass
+    /// retries.
+    pub(super) fn recheck(&mut self, table: &mut InterfaceTable) -> Changes {
+        self.next_recheck = Instant::now() + RECHECK_INTERVAL;
+        let mut v4_moved = Vec::new();
+        let mut touched = Vec::new();
+        for (ifindex, result) in table.refresh_all() {
+            match result {
+                Ok(change) => {
+                    if change.v4 {
+                        v4_moved.push(ifindex);
+                    }
+                    if change.v4 || change.v6 {
+                        touched.push(ifindex);
+                    }
+                }
+                Err(e) => log::debug!(
+                    "re-reading ifindex {ifindex} failed: {e}; keeping its last-known addresses"
+                ),
+            }
+        }
+        Changes {
+            v4_moved: captures_for(table, &v4_moved),
+            touched: captures_for(table, &touched),
+            reconcile: false,
+        }
     }
 
     /// Drain the monitor and re-resolve each interface a notification names, once per interface

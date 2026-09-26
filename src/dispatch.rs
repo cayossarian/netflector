@@ -38,7 +38,7 @@ use crate::reactor::{Arena, ControlEvent, Handler, HandlerSlot, Key, Reactor, Re
 use self::counters::log_counters;
 use self::egress::{Datagram, Egress};
 use self::interface_table::InterfaceTable;
-use self::lifecycle::InterfaceLifecycle;
+use self::lifecycle::{Changes, InterfaceLifecycle};
 
 /// Frames drained per readable event before yielding, so a flooded interface can't starve the
 /// others. BPF finishes its current userland batch past this: the wait won't re-fire for
@@ -549,6 +549,10 @@ impl PacketDispatcher {
 
     fn refresh_changed_interfaces(&mut self, reactor: &mut Reactor) {
         let changes = self.lifecycle.drain(&mut self.table);
+        self.apply_interface_changes(&changes, reactor);
+    }
+
+    fn apply_interface_changes(&mut self, changes: &Changes, reactor: &mut Reactor) {
         self.dial.evict_on_interface_change(
             reactor,
             &changes.v4_moved,
@@ -614,6 +618,7 @@ impl Handler for PacketDispatcher {
             .chain(self.dial.next_grace())
             .chain(self.report.as_ref().map(|r| r.next))
             .chain(Some(self.lifecycle.next_reconcile()))
+            .chain(Some(self.lifecycle.next_recheck()))
             .min()
     }
 
@@ -640,6 +645,11 @@ impl Handler for PacketDispatcher {
         {
             log_counters(self.table.counter_rows());
             report.next = now + report.interval;
+        }
+
+        if now >= self.lifecycle.next_recheck() {
+            let changes = self.lifecycle.recheck(&mut self.table);
+            self.apply_interface_changes(&changes, reactor);
         }
 
         if now >= self.lifecycle.next_reconcile() {
