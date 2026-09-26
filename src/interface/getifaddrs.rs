@@ -13,7 +13,7 @@ use libc::c_int;
 
 use super::{InterfaceAddresses, V6Pick, v6_rank};
 use crate::net::mac::MacAddr;
-use crate::sys::{check, open_socket};
+use crate::sys::{check, no_ipv6_stack, open_socket};
 
 /// # Errors
 /// `getifaddrs` failing or the v6 flag socket not opening. An unknown interface, or a host with
@@ -178,13 +178,6 @@ fn inet6_socket() -> io::Result<Option<OwnedFd>> {
     }
 }
 
-fn no_ipv6_stack(e: &io::Error) -> bool {
-    matches!(
-        e.raw_os_error(),
-        Some(libc::EAFNOSUPPORT | libc::EPROTONOSUPPORT)
-    )
-}
-
 /// `IN6_IFF_*` bits that disqualify a v6 address as a source.
 const IN6_IFF_UNUSABLE: c_int =
     libc::IN6_IFF_TENTATIVE | libc::IN6_IFF_DUPLICATED | libc::IN6_IFF_DEPRECATED;
@@ -212,16 +205,6 @@ mod tests {
     use std::mem::offset_of;
 
     use super::*;
-
-    #[test]
-    fn only_a_missing_ipv6_stack_reads_as_no_v6() {
-        let of = io::Error::from_raw_os_error;
-        assert!(no_ipv6_stack(&of(libc::EAFNOSUPPORT)));
-        assert!(no_ipv6_stack(&of(libc::EPROTONOSUPPORT)));
-        // Pressure errnos fail the resolve instead of committing a false v6 loss.
-        assert!(!no_ipv6_stack(&of(libc::EMFILE)));
-        assert!(!no_ipv6_stack(&of(libc::ENOBUFS)));
-    }
 
     #[test]
     fn canonical_v6_strips_the_embedded_scope_from_link_local() {

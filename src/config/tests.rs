@@ -1366,3 +1366,98 @@ fn disjoint_wol_ports_do_not_conflict() {
         "#;
     assert!(from_toml(text).is_ok());
 }
+
+#[test]
+fn only_default_entries_fall_back_to_ipv4() {
+    let mut cfg = from_toml(
+        r#"
+            [reflectors.both]
+            source_if = "lan1"
+            target_if = "wg1"
+            udp_ports = [9003]
+            udp_groups = ["239.255.90.90", "ff12::8384"]
+            target_peers = ["10.10.10.2", "fd00::2"]
+
+            [reflectors.v6_groups]
+            source_if = "lan2"
+            target_if = "wg2"
+            udp_ports = [9003]
+            udp_groups = ["ff12::8384"]
+            udp_broadcast = true
+
+            [reflectors.dual]
+            source_if = "lan3"
+            target_if = "wg3"
+            mdns = true
+            address_family = "dual"
+
+            [reflectors.six]
+            source_if = "lan4"
+            target_if = "wg4"
+            mdns = true
+            address_family = "ipv6"
+        "#,
+    )
+    .unwrap();
+    cfg.fall_back_to_ipv4().unwrap();
+    let entry = |name: &str| {
+        cfg.reflectors
+            .iter()
+            .find(|r| r.name.as_str() == name)
+            .unwrap()
+    };
+    let groups = |name: &str| entry(name).udp.as_ref().unwrap().groups.as_deref();
+
+    assert_eq!(entry("both").address_family, AddressFamily::Ipv4);
+    assert_eq!(
+        groups("both"),
+        Some(&["239.255.90.90".parse().unwrap()][..])
+    );
+    assert_eq!(
+        entry("both").target_peers.as_deref(),
+        Some(&["10.10.10.2".parse().unwrap()][..])
+    );
+    assert_eq!(entry("v6_groups").address_family, AddressFamily::Ipv4);
+    assert_eq!(groups("v6_groups"), None);
+    assert_eq!(entry("dual").address_family, AddressFamily::Dual);
+    assert_eq!(entry("six").address_family, AddressFamily::Ipv6);
+}
+
+#[test]
+fn a_relay_of_only_ipv6_groups_needs_ipv6() {
+    let mut cfg = from_toml(
+        r#"
+            [reflectors.relay]
+            source_if = "lan"
+            target_if = "wg"
+            udp_ports = [9003]
+            udp_groups = ["ff12::8384"]
+        "#,
+    )
+    .unwrap();
+    assert!(matches!(
+        cfg.fall_back_to_ipv4(),
+        Err(ConfigError::Ipv6OnlyRelay { .. })
+    ));
+}
+
+#[test]
+fn only_ipv6_peers_need_ipv6() {
+    let mut cfg = from_toml(
+        r#"
+            [reflectors.peered]
+            source_if = "lan"
+            target_if = "wg"
+            mdns = true
+            target_peers = ["fd00::2"]
+        "#,
+    )
+    .unwrap();
+    assert!(matches!(
+        cfg.fall_back_to_ipv4(),
+        Err(ConfigError::Ipv6OnlyPeers {
+            field: "target_peers",
+            ..
+        })
+    ));
+}

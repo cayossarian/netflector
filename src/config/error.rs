@@ -59,6 +59,15 @@ pub(crate) enum ConfigError {
     #[error("reflector \"{name}\" sets udp_broadcast but its address_family has no IPv4")]
     UdpBroadcastFamily { name: ReflectorName },
 
+    #[error("reflector \"{name}\" relays only IPv6 groups, but this host has no IPv6")]
+    Ipv6OnlyRelay { name: ReflectorName },
+
+    #[error("reflector \"{name}\" lists only IPv6 {field}, but this host has no IPv6")]
+    Ipv6OnlyPeers {
+        name: ReflectorName,
+        field: &'static str,
+    },
+
     #[error(
         "reflector \"{name}\" would relay {protocol} on port {port} twice, through udp_ports as well"
     )]

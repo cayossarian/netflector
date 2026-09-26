@@ -89,7 +89,8 @@ fn reflect(path: Option<&Path>, join_groups: bool) -> Result<()> {
 
     sys::raise_file_limit();
 
-    let config = Config::from_sources(toml_text.as_deref(), env)?;
+    let mut config = Config::from_sources(toml_text.as_deref(), env)?;
+    fit_to_host(&mut config)?;
     let count = config.reflectors.len();
     log::info!(
         "loaded {count} reflector{}",
@@ -143,6 +144,21 @@ fn reflect(path: Option<&Path>, join_groups: bool) -> Result<()> {
         memory_report::log_report();
     }
     log::info!("stopped");
+    Ok(())
+}
+
+/// Before anything uses the configuration.
+///
+/// # Errors
+/// An entry that needs IPv6 for what it was configured to do.
+fn fit_to_host(config: &mut Config) -> Result<()> {
+    if !sys::has_ipv6() {
+        log::info!(
+            "this host has no IPv6 stack; entries with the default address family reflect \
+             IPv4 only"
+        );
+        config.fall_back_to_ipv4()?;
+    }
     Ok(())
 }
 
@@ -231,5 +247,107 @@ mod tests {
         // that quietly does nothing.
         let bad = "[reflectors.tv]\nsource_if = \"vtnet0\"\ntarget_if = \"vtnet1\"\n";
         assert!(Config::from_sources(Some(bad), Vec::new()).is_err());
+    }
+
+    // Under "default" IPv6 is best-effort: on a host with no IPv6 stack the entry reflects IPv4
+    // instead of failing startup.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[cfg_attr(miri, ignore = "needs a real capture device")]
+    fn a_default_entry_starts_on_a_host_without_an_ipv6_stack() {
+        use crate::interface::LOOPBACK_IFACE;
+        use crate::test_support::{Tun, loopback_lock};
+
+        let _serial = loopback_lock();
+        let Some(tun) = Tun::create() else {
+            return;
+        };
+        assert!(tun.add_address("10.99.202.1/24"));
+        let mut config = Config::from_sources(
+            Some(&format!(
+                "[reflectors.a]\nsource_if = \"{LOOPBACK_IFACE}\"\ntarget_if = \"{}\"\n\
+                 mdns = true\n",
+                tun.name
+            )),
+            std::iter::empty(),
+        )
+        .expect("a valid configuration");
+        // A thread of its own: the seccomp filter binds the thread that installs it and dies
+        // with it.
+        std::thread::spawn(move || {
+            deny_ipv6_sockets();
+            fit_to_host(&mut config)?;
+            let mut dispatcher = PacketDispatcher::new();
+            let interfaces = open_captures(&config, &mut dispatcher)?;
+            build_reflector(&config.reflectors[0], &interfaces, &mut dispatcher)
+        })
+        .join()
+        .expect("the startup thread panicked")
+        .expect("a default entry starts without IPv6");
+    }
+
+    /// From here on this thread's `socket(AF_INET6, ..)` fails with `EAFNOSUPPORT`, as on a
+    /// kernel booted with `ipv6.disable=1`.
+    #[cfg(target_os = "linux")]
+    fn deny_ipv6_sockets() {
+        use libc::{
+            BPF_ABS, BPF_JEQ, BPF_JMP, BPF_K, BPF_LD, BPF_RET, BPF_W, c_ulong, sock_filter,
+            sock_fprog,
+        };
+
+        // `struct seccomp_data`: `nr` at 0, the low word of `args[0]` at 16 or 20.
+        const NR: u32 = 0;
+        const ARG0: u32 = if cfg!(target_endian = "big") { 20 } else { 16 };
+        let op = |code: u32, k: u32, jt: u8, jf: u8| sock_filter {
+            code: u16::try_from(code).unwrap(),
+            jt,
+            jf,
+            k,
+        };
+        let mut filter = [
+            op(BPF_LD | BPF_W | BPF_ABS, NR, 0, 0),
+            op(
+                BPF_JMP | BPF_JEQ | BPF_K,
+                u32::try_from(libc::SYS_socket).unwrap(),
+                0,
+                3,
+            ),
+            op(BPF_LD | BPF_W | BPF_ABS, ARG0, 0, 0),
+            op(
+                BPF_JMP | BPF_JEQ | BPF_K,
+                u32::try_from(libc::AF_INET6).unwrap(),
+                0,
+                1,
+            ),
+            op(
+                BPF_RET | BPF_K,
+                libc::SECCOMP_RET_ERRNO | u32::try_from(libc::EAFNOSUPPORT).unwrap(),
+                0,
+                0,
+            ),
+            op(BPF_RET | BPF_K, libc::SECCOMP_RET_ALLOW, 0, 0),
+        ];
+        let prog = sock_fprog {
+            len: u16::try_from(filter.len()).unwrap(),
+            filter: filter.as_mut_ptr(),
+        };
+        let (one, zero): (c_ulong, c_ulong) = (1, 0);
+        // SAFETY: plain prctl calls; the kernel copies `prog` before returning.
+        unsafe {
+            assert_eq!(
+                libc::prctl(libc::PR_SET_NO_NEW_PRIVS, one, zero, zero, zero),
+                0
+            );
+            assert_eq!(
+                libc::prctl(
+                    libc::PR_SET_SECCOMP,
+                    c_ulong::from(libc::SECCOMP_MODE_FILTER),
+                    &raw const prog,
+                ),
+                0,
+                "install the seccomp filter: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
 }
