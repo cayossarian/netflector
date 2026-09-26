@@ -119,7 +119,9 @@ impl<'de> Deserialize<'de> for AddressFamily {
 }
 
 /// Non-empty and whitespace-free: a padded name would miss the interface with a confusing capture
-/// error and slip past the `source_if`/`target_if` equality check.
+/// error and slip past the `source_if`/`target_if` equality check. Shorter than `IF_NAMESIZE` and
+/// colon-free too: Linux resolves a longer name by its first bytes and cuts one at a colon, so
+/// either would land on another interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InterfaceName(String);
 
@@ -137,15 +139,27 @@ impl fmt::Display for InterfaceName {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("interface name must not be empty or contain whitespace")]
-pub(crate) struct ParseInterfaceNameError;
+pub(crate) enum ParseInterfaceNameError {
+    #[error("interface name must not be empty or contain whitespace")]
+    Blank,
+    #[error("interface name must be at most {max} bytes", max = libc::IF_NAMESIZE - 1)]
+    TooLong,
+    #[error("interface name must not contain ':', which names an address label, not an interface")]
+    Colon,
+}
 
 impl FromStr for InterfaceName {
     type Err = ParseInterfaceNameError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() || s.chars().any(char::is_whitespace) {
-            return Err(ParseInterfaceNameError);
+            return Err(ParseInterfaceNameError::Blank);
+        }
+        if s.len() >= libc::IF_NAMESIZE {
+            return Err(ParseInterfaceNameError::TooLong);
+        }
+        if s.contains(':') {
+            return Err(ParseInterfaceNameError::Colon);
         }
         Ok(Self(s.to_owned()))
     }
@@ -324,15 +338,36 @@ mod tests {
     #[test]
     fn interface_name_parses_via_fromstr() {
         assert_eq!("en0".parse::<InterfaceName>().unwrap().as_str(), "en0");
-        assert_eq!("".parse::<InterfaceName>(), Err(ParseInterfaceNameError));
+        assert_eq!(
+            "".parse::<InterfaceName>(),
+            Err(ParseInterfaceNameError::Blank)
+        );
         // Whitespace is rejected: a padded name misses the interface and dodges SameInterface.
         assert_eq!(
             " en0 ".parse::<InterfaceName>(),
-            Err(ParseInterfaceNameError)
+            Err(ParseInterfaceNameError::Blank)
         );
         assert_eq!(
             "e n0".parse::<InterfaceName>(),
-            Err(ParseInterfaceNameError)
+            Err(ParseInterfaceNameError::Blank)
+        );
+    }
+
+    #[test]
+    fn interface_name_refuses_a_name_too_long_for_an_interface() {
+        let longest = "a".repeat(libc::IF_NAMESIZE - 1);
+        assert!(longest.parse::<InterfaceName>().is_ok());
+        assert_eq!(
+            format!("{longest}a").parse::<InterfaceName>(),
+            Err(ParseInterfaceNameError::TooLong)
+        );
+    }
+
+    #[test]
+    fn interface_name_refuses_a_colon() {
+        assert_eq!(
+            "eth0:1".parse::<InterfaceName>(),
+            Err(ParseInterfaceNameError::Colon)
         );
     }
 
