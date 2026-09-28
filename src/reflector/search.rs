@@ -438,8 +438,8 @@ pub(crate) fn build_pair(
         "{} reflector \"{}\": {} <-> {} ({summary})",
         protocol.name,
         reflector.name.as_str(),
-        reflector.source_if.as_str(),
-        reflector.target_if.as_str()
+        reflector.source_if,
+        reflector.target_if
     );
     Ok(())
 }

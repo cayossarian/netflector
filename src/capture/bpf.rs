@@ -15,7 +15,7 @@ use libc::{c_uint, c_ulong, c_void};
 
 use super::Read;
 use super::filter::{BpfInsn, DLT_NULL_UDP_FILTER, ETHERNET_UDP_FILTER};
-use crate::interface::Interface;
+use crate::interface::{Interface, InterfaceName};
 use crate::libcex::bpf_wordalign;
 use crate::logging::{WARN_WINDOW, log_rate};
 use crate::net::LinkType;
@@ -28,7 +28,7 @@ pub(crate) struct Capture {
     filled: usize,
     offset: usize,
     link_type: LinkType,
-    name: String,
+    name: InterfaceName,
 }
 
 impl Capture {
@@ -101,7 +101,7 @@ impl Capture {
         self.link_type
     }
 
-    pub(crate) fn if_name(&self) -> &str {
+    pub(crate) fn if_name(&self) -> &InterfaceName {
         &self.name
     }
 
@@ -247,22 +247,7 @@ fn attach(fd: &OwnedFd, interface: &Interface) -> io::Result<LinkType> {
     // SAFETY: all-zero is a valid `ifreq`: `ifr_name` is a byte array and the `ifr_ifru`
     // union holds only integers/pointers/sockaddr, none with an invalid zero bit pattern.
     let mut ifr: libc::ifreq = unsafe { core::mem::zeroed() };
-    let name = interface.name.as_bytes();
-    if name.len() >= ifr.ifr_name.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "interface name too long",
-        ));
-    }
-    // SAFETY: `ifr_name` is a `[c_char; IFNAMSIZ]`; we checked `name` fits with
-    // room for the zero terminator the zeroed `ifr` already provides.
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            name.as_ptr(),
-            ifr.ifr_name.as_mut_ptr().cast::<u8>(),
-            name.len(),
-        );
-    }
+    ifr.ifr_name = interface.name.to_c_array();
     // SAFETY: BIOCSETIF reads an `ifreq`.
     unsafe { ioctl(fd, libc::BIOCSETIF, &mut ifr) }?;
 
@@ -490,7 +475,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn an_oversized_record_costs_a_read() -> io::Result<()> {
         let _serial = loopback_lock();
-        let Some(mut capture) = open_or_skip("lo0")? else {
+        let Some(mut capture) = open_or_skip(&InterfaceName::loopback())? else {
             return Ok(());
         };
         let receiver = std::net::UdpSocket::bind("127.0.0.1:0")?;
@@ -523,7 +508,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn loopback_capture_decodes_known_frames() -> io::Result<()> {
         let _serial = loopback_lock();
-        let Some(mut capture) = open_or_skip("lo0")? else {
+        let Some(mut capture) = open_or_skip(&InterfaceName::loopback())? else {
             return Ok(());
         };
         assert_eq!(capture.link_type(), LinkType::DltNull);
@@ -567,7 +552,7 @@ mod tests {
         const PROBE: &[u8] = b"netflector-loopback-send-probe";
 
         let _serial = loopback_lock();
-        let Some(cap) = open_or_skip("lo0")? else {
+        let Some(cap) = open_or_skip(&InterfaceName::loopback())? else {
             return Ok(());
         };
 

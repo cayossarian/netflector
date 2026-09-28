@@ -8,9 +8,9 @@ use thiserror::Error;
 
 use super::conflict::Protocol;
 use super::value::{
-    InterfaceName, ParseAddressFamilyError, ParseInterfaceNameError, ParseLogLevelError,
-    ParseReflectorNameError, ReflectorName,
+    ParseAddressFamilyError, ParseLogLevelError, ParseReflectorNameError, ReflectorName,
 };
+use crate::interface::{InterfaceName, ParseInterfaceNameError};
 use crate::net::mac::MacAddr;
 use crate::unique_list::ListError;
 

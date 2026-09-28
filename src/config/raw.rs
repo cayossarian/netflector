@@ -5,9 +5,8 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use super::error::ConfigError;
-use super::value::{
-    AddressFamily, GroupList, InterfaceName, LogLevel, PeerList, PortList, ReflectorName,
-};
+use super::value::{AddressFamily, GroupList, LogLevel, PeerList, PortList, ReflectorName};
+use crate::interface::InterfaceName;
 use crate::net::mac::MacSet;
 
 #[derive(Debug, Default, Deserialize)]

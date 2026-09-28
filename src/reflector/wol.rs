@@ -77,13 +77,13 @@ pub(crate) fn build(
     let Some(wol) = &reflector.wol else {
         return Ok(());
     };
-    let ingress = interfaces.require(reflector.source_if.as_str())?;
-    let egress = interfaces.require(reflector.target_if.as_str())?;
+    let ingress = interfaces.require(&reflector.source_if)?;
+    let egress = interfaces.require(&reflector.target_if)?;
 
     require_egress_family(
         dispatcher,
         egress,
-        reflector.target_if.as_str(),
+        &reflector.target_if,
         reflector.address_family,
     )?;
 
@@ -110,8 +110,8 @@ pub(crate) fn build(
     log::info!(
         "WoL reflector \"{}\": {} -> {} on {} port(s)",
         reflector.name.as_str(),
-        reflector.source_if.as_str(),
-        reflector.target_if.as_str(),
+        reflector.source_if,
+        reflector.target_if,
         wol.ports.len()
     );
     Ok(())

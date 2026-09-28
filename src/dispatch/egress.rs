@@ -193,7 +193,7 @@ fn egress_name(table: &InterfaceTable, egress: CaptureKey) -> &str {
     table
         .interface_of(egress)
         .and_then(|interface| table.interface_name(interface))
-        .unwrap_or("?")
+        .map_or("?", |name| name)
 }
 
 /// Re-word `EMSGSIZE` to name the frame, the interface and its MTU; the bare "Message too long"

@@ -6,9 +6,8 @@ use std::str::FromStr;
 
 use super::error::{ConfigError, ParseBoolError, ParseValueError, RequiredField};
 use super::raw::{RawConfig, RawReflector};
-use super::value::{
-    AddressFamily, GroupList, InterfaceName, LogLevel, PeerList, PortList, ReflectorName,
-};
+use super::value::{AddressFamily, GroupList, LogLevel, PeerList, PortList, ReflectorName};
+use crate::interface::InterfaceName;
 use crate::net::mac::MacSet;
 
 /// A reflector's fields as they arrive, one `NETFLECTOR_<tag>_<param>` variable at a time.

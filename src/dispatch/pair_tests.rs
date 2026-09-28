@@ -14,7 +14,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::capture::{Capture, Read};
-use crate::interface::{Interface, InterfaceAddresses, Ipv6Scope, if_index};
+use crate::interface::{Interface, InterfaceAddresses, InterfaceName, Ipv6Scope, if_index};
 use crate::net::packet::Packet;
 use crate::sys::setsockopt;
 use crate::test_support::{Capability, skip};
@@ -62,8 +62,8 @@ static PAIR_LOCK: Mutex<()> = Mutex::new(());
 /// skip note) without root or when the platform tooling refuses; `Drop` destroys only interfaces
 /// this fixture created.
 struct InterfacePair {
-    inject: String,
-    receive: String,
+    inject: InterfaceName,
+    receive: InterfaceName,
     /// This pair's slot in the per-pair address plan.
     subnet: u8,
 }
@@ -182,8 +182,12 @@ impl InterfacePair {
     /// against other processes and against this process's concurrently-running tests.
     #[cfg(target_os = "linux")]
     fn create_platform(subnet: u8) -> Option<Self> {
-        let inject = format!("rp{}x{subnet}a", std::process::id() % 100_000);
-        let receive = format!("rp{}x{subnet}b", std::process::id() % 100_000);
+        let inject: InterfaceName = format!("rp{}x{subnet}a", std::process::id() % 100_000)
+            .parse()
+            .expect("a valid veth name");
+        let receive: InterfaceName = format!("rp{}x{subnet}b", std::process::id() % 100_000)
+            .parse()
+            .expect("a valid veth name");
         if !run(&format!(
             "ip link add {inject} type veth peer name {receive}"
         )) {
@@ -278,8 +282,8 @@ impl InterfacePair {
             return None;
         };
         let pair = Self {
-            inject,
-            receive,
+            inject: inject.parse().expect("the kernel assigned a valid name"),
+            receive: receive.parse().expect("the kernel assigned a valid name"),
             subnet,
         }; // Drop cleans up from here on
         if !pair.configure() {
@@ -349,8 +353,8 @@ impl InterfacePair {
         }
         let receive = format!("{}b", &inject[..inject.len() - 1]);
         let pair = Self {
-            inject,
-            receive,
+            inject: inject.parse().expect("the kernel assigned a valid name"),
+            receive: receive.parse().expect("the kernel assigned a valid name"),
             subnet,
         }; // Drop cleans up from here on
         if !pair.configure() {
@@ -413,7 +417,7 @@ impl Drop for InterfacePair {
 /// True once `name` is administratively up with a running link layer. `getifaddrs` is portable
 /// across all three platforms and the flags repeat on each of an interface's entries, so one
 /// matching entry suffices.
-fn link_running(name: &str) -> bool {
+fn link_running(name: &InterfaceName) -> bool {
     let mut addrs: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: getifaddrs fills a heap-allocated list; freed below with freeifaddrs.
     if unsafe { libc::getifaddrs(&raw mut addrs) } != 0 {

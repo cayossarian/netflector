@@ -171,7 +171,8 @@ mod tests {
     fn loopback_routes_via_lo0() {
         // A live exchange: the header layout and size have to be right or the kernel rejects the
         // request or the reply is read from the wrong place.
-        let want = crate::interface::if_index("lo0").expect("lo0 exists");
+        let want = crate::interface::if_index(&crate::interface::InterfaceName::loopback())
+            .expect("the loopback exists");
         assert_eq!(egress_ifindex(Ipv4Addr::LOCALHOST).expect("a route"), want);
     }
 

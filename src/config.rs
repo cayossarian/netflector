@@ -15,7 +15,7 @@ mod value;
 
 pub(crate) use self::error::ConfigError;
 pub(crate) use self::value::{
-    AddressFamily, GroupList, InterfaceName, LogLevel, PeerList, PortList, ReflectorName,
+    AddressFamily, GroupList, LogLevel, PeerList, PortList, ReflectorName,
 };
 
 use std::net::IpAddr;
@@ -28,6 +28,7 @@ use serde::Deserialize;
 
 use self::conflict::check_conflicts;
 use self::raw::{RawConfig, RawReflector};
+use crate::interface::InterfaceName;
 use crate::net::mac::MacSet;
 use crate::unique_list::{ListRule, UniqueList};
 

@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use crate::capture::Capture;
 use crate::dispatch::{CaptureKey, PacketDispatcher};
-use crate::interface::{Interface, LOOPBACK_IFACE};
+use crate::interface::{Interface, InterfaceName};
 use crate::reactor::{Handler, Reactor, ReadyEvent};
 
 /// Something a test needs from the host and not every host offers. A test that finds one missing
@@ -104,7 +104,7 @@ pub(crate) fn skip(cap: Capability, reason: impl fmt::Display) {
 
 /// Open a capture on `if_name`, or `Ok(None)` (skip) when the host can't: no BPF access /
 /// `CAP_NET_RAW`, or the interface is absent. Other errors propagate for the caller to `?`.
-pub(crate) fn open_or_skip(if_name: &str) -> io::Result<Option<Capture>> {
+pub(crate) fn open_or_skip(if_name: &InterfaceName) -> io::Result<Option<Capture>> {
     skip_unless_captured(
         if_name,
         Interface::open(if_name).and_then(|interface| Capture::open(&interface)),
@@ -114,18 +114,21 @@ pub(crate) fn open_or_skip(if_name: &str) -> io::Result<Option<Capture>> {
 /// [`open_or_skip`] into `dispatcher`, which keeps the capture.
 pub(crate) fn open_capture_or_skip(
     dispatcher: &mut PacketDispatcher,
-    if_name: &str,
+    if_name: &InterfaceName,
 ) -> io::Result<Option<CaptureKey>> {
     skip_unless_captured(if_name, dispatcher.open_capture(if_name))
 }
 
 /// A loopback capture in `dispatcher`, or `None` (skip) without `CAP_NET_RAW`.
 pub(crate) fn open_loopback_or_skip(dispatcher: &mut PacketDispatcher) -> Option<CaptureKey> {
-    open_capture_or_skip(dispatcher, LOOPBACK_IFACE)
+    open_capture_or_skip(dispatcher, &InterfaceName::loopback())
         .expect("unexpected loopback capture open failure")
 }
 
-fn skip_unless_captured<T>(if_name: &str, opened: io::Result<T>) -> io::Result<Option<T>> {
+fn skip_unless_captured<T>(
+    if_name: &InterfaceName,
+    opened: io::Result<T>,
+) -> io::Result<Option<T>> {
     match opened {
         Ok(opened) => Ok(Some(opened)),
         Err(e)
@@ -182,7 +185,7 @@ impl crate::reflector::ReplyRewrite for ReplaceRewrite {
 #[cfg(target_os = "linux")]
 pub(crate) struct Tun {
     pub(crate) far_end: std::fs::File,
-    pub(crate) name: String,
+    pub(crate) name: InterfaceName,
 }
 
 #[cfg(target_os = "linux")]
@@ -231,9 +234,10 @@ impl Tun {
             return None;
         }
         // SAFETY: the kernel wrote a NUL-terminated name into `ifr_name`.
-        let name = unsafe { std::ffi::CStr::from_ptr(ifr.ifr_name.as_ptr()) }
+        let name: InterfaceName = unsafe { std::ffi::CStr::from_ptr(ifr.ifr_name.as_ptr()) }
             .to_string_lossy()
-            .into_owned();
+            .parse()
+            .expect("the kernel assigned a valid name");
         let up = std::process::Command::new("ip")
             .args(["link", "set", "dev", &name, "up"])
             .status()

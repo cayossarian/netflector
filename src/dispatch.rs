@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use crate::capture::{Capture, Read};
 use crate::config::AddressFamily;
-use crate::interface::InterfaceAddresses;
+use crate::interface::{InterfaceAddresses, InterfaceName};
 use crate::net::LinkType;
 use crate::net::mac::{MacAddr, MacSet};
 use crate::net::packet::Packet;
@@ -251,7 +251,7 @@ impl PacketDispatcher {
     /// # Errors
     /// A resolution syscall failure when first opening the interface, or the capture failing to
     /// open.
-    pub(crate) fn open_capture(&mut self, name: &str) -> io::Result<CaptureKey> {
+    pub(crate) fn open_capture(&mut self, name: &InterfaceName) -> io::Result<CaptureKey> {
         let key = self.table.open_capture(name)?;
         let ifindex = self
             .table
@@ -314,7 +314,10 @@ impl PacketDispatcher {
 
     /// The DIAL registry with the name of the interface behind `target`. One call returns both:
     /// a caller could not hold the borrowed name across a second `&mut self` accessor.
-    pub(crate) fn dial_context(&mut self, target: CaptureKey) -> (&mut DialContext, Option<&str>) {
+    pub(crate) fn dial_context(
+        &mut self,
+        target: CaptureKey,
+    ) -> (&mut DialContext, Option<&InterfaceName>) {
         let target_iface = self
             .table
             .interface_of(target)
