@@ -9,6 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use std::os::fd::{AsRawFd, RawFd};
 use std::time::{Duration, Instant};
 
+use crate::interface::InterfaceName;
 use crate::logging::log_rate;
 use crate::net::is_never_a_peer;
 use crate::net::tcp::TcpSocket;
@@ -63,7 +64,7 @@ pub(super) struct DialDeviceProxy {
     target: Ipv4Addr,
     /// The name, not an ifindex: it stays valid across an interface recreation. `None` skips the
     /// confinement.
-    target_iface: Option<String>,
+    target_iface: Option<InterfaceName>,
     desc: TcpSocket,
     desc_endpoint: SocketAddrV4,
     /// Minted eagerly so its address exists to rewrite a description response's `Application-URL`
@@ -77,7 +78,7 @@ pub(super) struct DialDeviceProxy {
 impl DialDeviceProxy {
     pub(super) fn new(
         target: Ipv4Addr,
-        target_iface: Option<String>,
+        target_iface: Option<InterfaceName>,
         desc: TcpSocket,
         desc_endpoint: SocketAddrV4,
         rest: TcpSocket,
@@ -163,7 +164,7 @@ impl DialDeviceProxy {
     ) {
         let key = self.own_key();
         let rest_listener = self.rest.local_addr();
-        let confine = |fd| egress::confine(fd, device_endpoint, self.target_iface.as_deref());
+        let confine = |fd| egress::confine(fd, device_endpoint, self.target_iface.as_ref());
         let device = match TcpSocket::connect(device_endpoint, self.target, confine) {
             Ok(device) => device,
             Err(e) => {

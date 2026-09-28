@@ -9,23 +9,23 @@ use std::io;
 use std::net::SocketAddrV4;
 use std::os::fd::RawFd;
 
+use crate::interface::InterfaceName;
+
 /// Pin the not-yet-connected `fd` to the interface `iface` names; `None` skips.
 ///
 /// # Errors
 /// An unknown interface, or the pin's `setsockopt` failure.
 #[cfg(not(target_os = "freebsd"))]
-pub(super) fn confine(fd: RawFd, _dst: SocketAddrV4, iface: Option<&str>) -> io::Result<()> {
+pub(super) fn confine(
+    fd: RawFd,
+    _dst: SocketAddrV4,
+    iface: Option<&InterfaceName>,
+) -> io::Result<()> {
     let Some(name) = iface else {
         return Ok(());
     };
     #[cfg(target_os = "linux")]
     {
-        if name.len() >= libc::IF_NAMESIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "interface name too long",
-            ));
-        }
         // The kernel NUL-terminates its copy, so the name goes without one.
         crate::sys::setsockopt_bytes(fd, libc::SOL_SOCKET, libc::SO_BINDTODEVICE, name.as_bytes())?;
     }
@@ -51,7 +51,11 @@ pub(super) fn confine(fd: RawFd, _dst: SocketAddrV4, iface: Option<&str>) -> io:
 /// # Errors
 /// An unknown interface, a routing-socket failure, or a destination that routes elsewhere.
 #[cfg(target_os = "freebsd")]
-pub(super) fn confine(_fd: RawFd, dst: SocketAddrV4, iface: Option<&str>) -> io::Result<()> {
+pub(super) fn confine(
+    _fd: RawFd,
+    dst: SocketAddrV4,
+    iface: Option<&InterfaceName>,
+) -> io::Result<()> {
     let Some(name) = iface else {
         return Ok(());
     };

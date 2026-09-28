@@ -5,8 +5,9 @@
 use std::fmt;
 use std::net::IpAddr;
 
-use super::value::{AddressFamily, InterfaceName};
+use super::value::AddressFamily;
 use super::{ConfigError, Reflector, UdpRelay};
+use crate::interface::InterfaceName;
 use crate::net::mac::MacSet;
 use crate::net::mdns::{MDNS_GROUP_V4, MDNS_GROUP_V6, MDNS_PORT};
 use crate::net::ssdp::{

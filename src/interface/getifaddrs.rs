@@ -11,14 +11,16 @@ use std::{ptr, slice};
 
 use libc::c_int;
 
-use super::{InterfaceAddresses, V6Pick, v6_rank};
+use super::{InterfaceAddresses, InterfaceName, V6Pick, v6_rank};
 use crate::net::mac::MacAddr;
 use crate::sys::{check, no_ipv6_stack, open_socket};
 
 /// # Errors
 /// `getifaddrs` failing or the v6 flag socket not opening. An unknown interface, or a host with
 /// no IPv6 stack, yields all-absent addresses instead.
-pub(super) fn resolve(if_name: &str) -> io::Result<(InterfaceAddresses, Option<u32>, bool)> {
+pub(super) fn resolve(
+    if_name: &InterfaceName,
+) -> io::Result<(InterfaceAddresses, Option<u32>, bool)> {
     let v6_sock = inet6_socket()?;
 
     let mut head: *mut libc::ifaddrs = ptr::null_mut();
@@ -183,15 +185,10 @@ const IN6_IFF_UNUSABLE: c_int =
     libc::IN6_IFF_TENTATIVE | libc::IN6_IFF_DUPLICATED | libc::IN6_IFF_DEPRECATED;
 
 /// The `IN6_IFF_*` flags of `addr` via `SIOCGIFAFLAG_IN6`; `None` if the ioctl fails.
-fn v6_flags(sock: &OwnedFd, if_name: &str, addr: libc::sockaddr_in6) -> Option<c_int> {
+fn v6_flags(sock: &OwnedFd, if_name: &InterfaceName, addr: libc::sockaddr_in6) -> Option<c_int> {
     // SAFETY: an all-zero `in6_ifreq` is valid (a zeroed name and union).
     let mut req: libc::in6_ifreq = unsafe { std::mem::zeroed() };
-    let n = if_name.len().min(libc::IFNAMSIZ - 1);
-    // SAFETY: copy `n` name bytes into the zeroed `c_char` buffer (same layout as `u8`);
-    // the trailing zero keeps it NUL-terminated.
-    unsafe {
-        ptr::copy_nonoverlapping(if_name.as_ptr(), req.ifr_name.as_mut_ptr().cast::<u8>(), n);
-    }
+    req.ifr_name = if_name.to_c_array();
     req.ifr_ifru.ifru_addr = addr;
     // SAFETY: the ioctl reads `req` (name + queried address) and writes the address flags
     // back into the union; `sock` is a valid `AF_INET6` socket.

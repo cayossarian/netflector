@@ -15,7 +15,7 @@ use super::filter::{
     BpfInsn, DROP_OUTGOING_PROLOGUE, DROP_VLAN_TAGGED_PROLOGUE, ETHERNET_UDP_FILTER,
     RAW_IP_UDP_FILTER,
 };
-use crate::interface::Interface;
+use crate::interface::{Interface, InterfaceName};
 use crate::logging::{WARN_WINDOW, log_rate};
 use crate::net::LinkType;
 use crate::sys::{IoStatus, check, open_socket, setsockopt, socklen_of};
@@ -26,7 +26,7 @@ pub(crate) struct Capture {
     fd: OwnedFd,
     buf: Box<[u8]>,
     link_type: LinkType,
-    name: String,
+    name: InterfaceName,
 }
 
 impl Capture {
@@ -106,7 +106,7 @@ impl Capture {
         self.link_type
     }
 
-    pub(crate) fn if_name(&self) -> &str {
+    pub(crate) fn if_name(&self) -> &InterfaceName {
         &self.name
     }
 
@@ -206,15 +206,10 @@ fn attach(fd: &OwnedFd, interface: &Interface) -> io::Result<LinkType> {
 }
 
 /// Ethernet (a loopback is framed the same) or raw IP (`ARPHRD_NONE`: `WireGuard`, tun).
-fn link_type_of(fd: &OwnedFd, if_name: &str) -> io::Result<LinkType> {
+fn link_type_of(fd: &OwnedFd, if_name: &InterfaceName) -> io::Result<LinkType> {
     // SAFETY: an all-zero `ifreq` is valid (a zeroed name and union).
     let mut ifr: libc::ifreq = unsafe { core::mem::zeroed() };
-    let n = if_name.len().min(libc::IFNAMSIZ - 1);
-    // SAFETY: copy `n` name bytes into the zeroed `c_char` buffer (same layout as `u8`);
-    // the trailing zero keeps it NUL-terminated.
-    unsafe {
-        std::ptr::copy_nonoverlapping(if_name.as_ptr(), ifr.ifr_name.as_mut_ptr().cast::<u8>(), n);
-    }
+    ifr.ifr_name = if_name.to_c_array();
     let request =
         libc::Ioctl::try_from(libc::SIOCGIFHWADDR).expect("SIOCGIFHWADDR fits the request type");
     // SAFETY: the ioctl reads the name and writes the hardware address back into the union; any
@@ -442,7 +437,7 @@ mod tests {
     fn captures_a_known_frame_on_lo() -> io::Result<()> {
         const PROBE: &[u8] = b"netflector-afpacket-capture-probe";
         let _serial = loopback_lock();
-        let Some(mut capture) = open_or_skip("lo")? else {
+        let Some(mut capture) = open_or_skip(&InterfaceName::loopback())? else {
             return Ok(());
         };
         assert_eq!(capture.link_type(), LinkType::Ethernet);
@@ -484,7 +479,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn an_oversized_frame_costs_a_read() -> io::Result<()> {
         let _serial = loopback_lock();
-        let Some(mut capture) = open_or_skip("lo")? else {
+        let Some(mut capture) = open_or_skip(&InterfaceName::loopback())? else {
             return Ok(());
         };
         let receiver = UdpSocket::bind("127.0.0.1:0")?;
@@ -519,7 +514,7 @@ mod tests {
     fn send_loops_back_on_lo() -> io::Result<()> {
         const PROBE: &[u8] = b"netflector-afpacket-send-probe";
         let _serial = loopback_lock();
-        let Some(mut capture) = open_or_skip("lo")? else {
+        let Some(mut capture) = open_or_skip(&InterfaceName::loopback())? else {
             return Ok(());
         };
 

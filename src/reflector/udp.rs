@@ -26,13 +26,13 @@ pub(crate) fn build(
     let Some(udp) = &reflector.udp else {
         return Ok(());
     };
-    let ingress = interfaces.require(reflector.source_if.as_str())?;
-    let egress = interfaces.require(reflector.target_if.as_str())?;
+    let ingress = interfaces.require(&reflector.source_if)?;
+    let egress = interfaces.require(&reflector.target_if)?;
 
     require_egress_family(
         dispatcher,
         egress,
-        reflector.target_if.as_str(),
+        &reflector.target_if,
         reflector.address_family,
     )?;
 
@@ -43,7 +43,7 @@ pub(crate) fn build(
             ingress,
             *group,
             "UDP relay",
-            reflector.source_if.as_str(),
+            &reflector.source_if,
         )?;
     }
 
@@ -81,8 +81,8 @@ pub(crate) fn build(
     log::info!(
         "UDP relay \"{}\": {} -> {} on {} port(s) to {} group(s){}",
         reflector.name.as_str(),
-        reflector.source_if.as_str(),
-        reflector.target_if.as_str(),
+        reflector.source_if,
+        reflector.target_if,
         udp.ports.len(),
         groups.len(),
         if udp.broadcast { " and broadcasts" } else { "" }

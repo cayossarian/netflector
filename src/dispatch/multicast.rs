@@ -241,11 +241,9 @@ mod tests {
     }
 
     fn loopback_ifindex() -> NonZeroU32 {
-        let name =
-            std::ffi::CString::new(crate::interface::LOOPBACK_IFACE).expect("iface has no NUL");
-        // SAFETY: `name` is a valid C string.
-        let idx = unsafe { libc::if_nametoindex(name.as_ptr()) };
-        NonZeroU32::new(idx).expect("loopback must resolve to an index")
+        crate::interface::if_index(&crate::interface::InterfaceName::loopback())
+            .and_then(NonZeroU32::new)
+            .expect("loopback must resolve to an index")
     }
 
     // reset drops the per-family sockets while keeping the desired list, so the next rejoin

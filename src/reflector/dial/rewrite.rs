@@ -8,6 +8,7 @@ use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
 use crate::dispatch::{CaptureKey, DialContext, DialProxyKey};
+use crate::interface::InterfaceName;
 use crate::net::is_never_a_peer;
 use crate::net::ssdp::dial::{
     dial_location_value, is_dial_service_message, parse_cache_control_max_age,
@@ -35,7 +36,7 @@ pub(crate) struct ProxyPlacement<'a> {
     pub(crate) target_capture: CaptureKey,
     pub(crate) target: Ipv4Addr,
     /// `None` skips the egress pin.
-    pub(crate) target_iface: Option<&'a str>,
+    pub(crate) target_iface: Option<&'a InterfaceName>,
 }
 
 /// Rewrite a DIAL message's `LOCATION` to a source-side description proxy, minting one if none is
@@ -125,7 +126,7 @@ fn mint_proxy(
     let watches = [(desc.as_raw_fd(), 0), (rest.as_raw_fd(), 0)];
     let proxy = DialDeviceProxy::new(
         placement.target,
-        placement.target_iface.map(str::to_owned),
+        placement.target_iface.cloned(),
         desc,
         endpoint,
         rest,

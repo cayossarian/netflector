@@ -25,6 +25,7 @@ pub(crate) enum Read<'a> {
 #[cfg(test)]
 mod tests {
     use super::Read;
+    use crate::interface::InterfaceName;
     use crate::net::LinkType;
     use crate::test_support::open_or_skip;
 
@@ -37,7 +38,10 @@ mod tests {
             eprintln!("skip live_capture: set NETFLECTOR_TEST_IFACE to an Ethernet interface");
             return Ok(());
         };
-        let iface = iface.to_string_lossy();
+        let iface: InterfaceName = iface
+            .to_string_lossy()
+            .parse()
+            .expect("NETFLECTOR_TEST_IFACE is an interface name");
         let Some(mut capture) = open_or_skip(&iface)? else {
             return Ok(());
         };

@@ -110,8 +110,8 @@ pub(crate) fn build(
     log::info!(
         "mDNS reflector \"{}\": {} <-> {}",
         reflector.name.as_str(),
-        reflector.source_if.as_str(),
-        reflector.target_if.as_str()
+        reflector.source_if,
+        reflector.target_if
     );
     Ok(())
 }

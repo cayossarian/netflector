@@ -8,7 +8,9 @@ use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd, RawFd};
 
 use crate::capture::Capture;
-use crate::interface::{AddressChange, Interface, InterfaceAddresses, if_index_checked};
+use crate::interface::{
+    AddressChange, Interface, InterfaceAddresses, InterfaceName, if_index_checked,
+};
 
 use super::CaptureKey;
 use super::counters::{CaptureCounters, Outcome};
@@ -98,11 +100,14 @@ impl InterfaceTable {
 
     /// # Errors
     /// A resolution syscall failure when first opening the interface.
-    pub(super) fn find_or_add_interface(&mut self, name: &str) -> io::Result<InterfaceKey> {
+    pub(super) fn find_or_add_interface(
+        &mut self,
+        name: &InterfaceName,
+    ) -> io::Result<InterfaceKey> {
         if let Some(index) = self
             .entries
             .iter()
-            .position(|entry| entry.interface.name == name)
+            .position(|entry| entry.interface.name == *name)
         {
             return Ok(InterfaceKey(
                 u32::try_from(index).expect("interface count fits a u32"),
@@ -131,7 +136,7 @@ impl InterfaceTable {
     ///
     /// # Errors
     /// A resolution syscall failure, or the capture failing to open.
-    pub(super) fn open_capture(&mut self, name: &str) -> io::Result<CaptureKey> {
+    pub(super) fn open_capture(&mut self, name: &InterfaceName) -> io::Result<CaptureKey> {
         let interface = self.find_or_add_interface(name)?;
         let capture = Capture::open(&self.entries[interface.0 as usize].interface)?;
         let key = CaptureKey(u32::try_from(self.captures.len()).expect("capture count fits a u32"));
@@ -162,10 +167,10 @@ impl InterfaceTable {
         self.interface_index(self.interface_of(capture)?)
     }
 
-    pub(super) fn interface_name(&self, interface: InterfaceKey) -> Option<&str> {
+    pub(super) fn interface_name(&self, interface: InterfaceKey) -> Option<&InterfaceName> {
         self.entries
             .get(interface.0 as usize)
-            .map(|entry| entry.interface.name.as_str())
+            .map(|entry| &entry.interface.name)
     }
 
     pub(super) fn interface_index(&self, interface: InterfaceKey) -> Option<u32> {
@@ -229,9 +234,12 @@ impl InterfaceTable {
     }
 
     pub(super) fn counter_rows(&self) -> impl Iterator<Item = (&str, &CaptureCounters)> {
-        self.captures
-            .iter()
-            .filter_map(move |entry| Some((self.interface_name(entry.interface)?, &entry.counters)))
+        self.captures.iter().filter_map(move |entry| {
+            Some((
+                self.interface_name(entry.interface)?.as_str(),
+                &entry.counters,
+            ))
+        })
     }
 
     /// Re-resolve the interface at kernel index `ifindex` in place; `None` for one we don't
@@ -426,7 +434,7 @@ mod tests {
     use super::*;
     use crate::dispatch::MessageType;
     use crate::dispatch::multicast::join_unsupported;
-    use crate::interface::{LOOPBACK_IFACE, if_index};
+    use crate::interface::if_index;
     use crate::test_support::{Capability, skip};
 
     impl InterfaceTable {
@@ -442,8 +450,12 @@ mod tests {
 
         /// Rename an entry out from under its kernel interface, standing in for a vanished
         /// interface (the new name resolves to nothing). For the dispatcher's reconcile tests.
-        pub(in crate::dispatch) fn set_test_name(&mut self, interface: InterfaceKey, name: &str) {
-            self.entries[interface.0 as usize].interface.name = name.to_owned();
+        pub(in crate::dispatch) fn set_test_name(
+            &mut self,
+            interface: InterfaceKey,
+            name: &InterfaceName,
+        ) {
+            self.entries[interface.0 as usize].interface.name = name.clone();
         }
 
         /// Push a capture-less entry (no fd) so a routing test can mint a valid [`CaptureKey`] and
@@ -522,8 +534,8 @@ mod tests {
     #[cfg_attr(miri, ignore = "resolves a real interface")]
     fn refresh_by_ifindex_targets_the_matching_interface() -> io::Result<()> {
         let mut table = InterfaceTable::new();
-        table.find_or_add_interface(LOOPBACK_IFACE)?;
-        let ifindex = if_index(LOOPBACK_IFACE).expect("loopback has an ifindex");
+        table.find_or_add_interface(&InterfaceName::loopback())?;
+        let ifindex = if_index(&InterfaceName::loopback()).expect("loopback has an ifindex");
         let change = table
             .refresh_by_ifindex(ifindex)?
             .expect("the loopback interface matches its ifindex and re-resolves");
@@ -545,7 +557,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "resolves a real interface")]
     fn join_on_records_a_membership_and_refresh_re_attempts_it() -> io::Result<()> {
         let mut table = InterfaceTable::new();
-        let iface = table.find_or_add_interface(LOOPBACK_IFACE)?;
+        let iface = table.find_or_add_interface(&InterfaceName::loopback())?;
         for group in [
             IpAddr::V4(Ipv4Addr::new(224, 0, 0, 251)),
             IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb)),
@@ -576,12 +588,12 @@ mod tests {
     #[cfg_attr(miri, ignore = "resolves a real interface")]
     fn stale_interfaces_flags_and_rebind_repairs_a_moved_index() -> io::Result<()> {
         let mut table = InterfaceTable::new();
-        let key = table.find_or_add_interface(LOOPBACK_IFACE)?;
+        let key = table.find_or_add_interface(&InterfaceName::loopback())?;
         assert!(
             table.stale_interfaces().is_empty(),
             "a fresh entry is healthy"
         );
-        let real = if_index(LOOPBACK_IFACE).expect("loopback has an ifindex");
+        let real = if_index(&InterfaceName::loopback()).expect("loopback has an ifindex");
         // Simulate a recreation: the kernel identity moved while the cache kept the old index.
         table.entries[key.0 as usize].interface.ifindex = real + 1000;
         assert_eq!(
@@ -608,9 +620,9 @@ mod tests {
     #[cfg_attr(miri, ignore = "resolves a real interface")]
     fn rebind_to_absent_parks_the_entry() -> io::Result<()> {
         let mut table = InterfaceTable::new();
-        let key = table.find_or_add_interface(LOOPBACK_IFACE)?;
-        table.entries[key.0 as usize].interface.name = "netflector-gone0".into();
-        let real = if_index(LOOPBACK_IFACE).expect("loopback has an ifindex");
+        let key = table.find_or_add_interface(&InterfaceName::loopback())?;
+        table.entries[key.0 as usize].interface.name = "nf-gone0".parse().unwrap();
+        let real = if_index(&InterfaceName::loopback()).expect("loopback has an ifindex");
         assert_eq!(
             table.stale_interfaces(),
             [StaleInterface {
@@ -638,7 +650,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "resolves a real interface")]
     fn refresh_all_does_not_rejoin_a_parked_interface() -> io::Result<()> {
         let mut table = InterfaceTable::new();
-        let key = table.find_or_add_interface(LOOPBACK_IFACE)?;
+        let key = table.find_or_add_interface(&InterfaceName::loopback())?;
         if let Err(e) = table.join_on(key, IpAddr::V4(Ipv4Addr::new(224, 0, 0, 251))) {
             if join_unsupported(&e) {
                 skip(Capability::Membership, e);
@@ -646,7 +658,7 @@ mod tests {
             }
             return Err(e);
         }
-        table.entries[key.0 as usize].interface.name = "netflector-gone0".into();
+        table.entries[key.0 as usize].interface.name = "nf-gone0".parse().unwrap();
         table.rebind_interface(key, 0)?; // park: joiner reset, no rejoin
         table.refresh_all();
         assert!(
@@ -673,8 +685,8 @@ mod tests {
     #[cfg_attr(miri, ignore = "resolves a real interface")]
     fn find_or_add_interface_dedups_by_name() -> io::Result<()> {
         let mut table = InterfaceTable::new();
-        let first = table.find_or_add_interface(LOOPBACK_IFACE)?;
-        let second = table.find_or_add_interface(LOOPBACK_IFACE)?;
+        let first = table.find_or_add_interface(&InterfaceName::loopback())?;
+        let second = table.find_or_add_interface(&InterfaceName::loopback())?;
         assert_eq!(first, second, "the same name resolves to one interface key");
         Ok(())
     }

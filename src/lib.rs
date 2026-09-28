@@ -180,14 +180,14 @@ fn build_reflector(
 fn open_captures(config: &Config, dispatcher: &mut PacketDispatcher) -> Result<InterfaceMap> {
     let mut interfaces = InterfaceMap::default();
     for reflector in &config.reflectors {
-        for name in [reflector.source_if.as_str(), reflector.target_if.as_str()] {
+        for name in [&reflector.source_if, &reflector.target_if] {
             if interfaces.key_for(name).is_some() {
                 continue;
             }
             let key = dispatcher
                 .open_capture(name)
                 .map_err(|e| Error::capture(name, e))?;
-            interfaces.insert(name.to_owned(), key);
+            interfaces.insert(name.clone(), key);
         }
     }
     Ok(interfaces)
@@ -199,7 +199,7 @@ fn log_mtu_info(
     interfaces: &InterfaceMap,
     dispatcher: &PacketDispatcher,
 ) {
-    let (source_if, target_if) = (reflector.source_if.as_str(), reflector.target_if.as_str());
+    let (source_if, target_if) = (&reflector.source_if, &reflector.target_if);
     let (Ok(source_key), Ok(target_key)) =
         (interfaces.require(source_if), interfaces.require(target_if))
     else {

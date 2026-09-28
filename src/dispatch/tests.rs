@@ -1,6 +1,5 @@
 use super::lifecycle::RECONCILE_RETRY;
 use super::*;
-use crate::interface::LOOPBACK_IFACE;
 use crate::test_support::{Capability, loopback_lock, open_capture_or_skip, skip};
 use std::cell::{Cell, RefCell};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
@@ -27,8 +26,11 @@ impl PacketDispatcher {
 fn reconcile_repairs_a_moved_identity_and_arms_the_slow_tick() -> io::Result<()> {
     let mut reactor = Reactor::new()?;
     let mut dispatcher = PacketDispatcher::new();
-    let key = dispatcher.table.find_or_add_interface(LOOPBACK_IFACE)?;
-    let real = crate::interface::if_index(LOOPBACK_IFACE).expect("loopback has an ifindex");
+    let key = dispatcher
+        .table
+        .find_or_add_interface(&InterfaceName::loopback())?;
+    let real =
+        crate::interface::if_index(&InterfaceName::loopback()).expect("loopback has an ifindex");
     dispatcher.table.set_test_ifindex(key, real + 1000);
     assert!(!dispatcher.table.stale_interfaces().is_empty());
 
@@ -52,8 +54,12 @@ fn reconcile_repairs_a_moved_identity_and_arms_the_slow_tick() -> io::Result<()>
 fn reconcile_parks_a_vanished_interface_and_keeps_the_fast_retry() -> io::Result<()> {
     let mut reactor = Reactor::new()?;
     let mut dispatcher = PacketDispatcher::new();
-    let key = dispatcher.table.find_or_add_interface(LOOPBACK_IFACE)?;
-    dispatcher.table.set_test_name(key, "netflector-gone0");
+    let key = dispatcher
+        .table
+        .find_or_add_interface(&InterfaceName::loopback())?;
+    dispatcher
+        .table
+        .set_test_name(key, &"nf-gone0".parse().unwrap());
 
     dispatcher.reconcile_interfaces(&mut reactor);
 
@@ -67,7 +73,9 @@ fn reconcile_parks_a_vanished_interface_and_keeps_the_fast_retry() -> io::Result
         "an absent interface keeps the fast retry cadence"
     );
     // The interface "returns" (the name resolves again): the next pass rebuilds it.
-    dispatcher.table.set_test_name(key, LOOPBACK_IFACE);
+    dispatcher
+        .table
+        .set_test_name(key, &InterfaceName::loopback());
     dispatcher.reconcile_interfaces(&mut reactor);
     assert!(
         !dispatcher.table.any_absent(),
@@ -88,10 +96,13 @@ fn reconcile_parks_a_vanished_interface_and_keeps_the_fast_retry() -> io::Result
 fn reconcile_counts_a_recovery_on_the_interface_captures() -> io::Result<()> {
     let mut reactor = Reactor::new()?;
     let mut dispatcher = PacketDispatcher::new();
-    let key = dispatcher.table.find_or_add_interface(LOOPBACK_IFACE)?;
+    let key = dispatcher
+        .table
+        .find_or_add_interface(&InterfaceName::loopback())?;
     let capture = dispatcher.table.add_test_capture(); // links the first interface
     assert_eq!(dispatcher.table.recoveries_of(capture), 0);
-    let real = crate::interface::if_index(LOOPBACK_IFACE).expect("loopback has an ifindex");
+    let real =
+        crate::interface::if_index(&InterfaceName::loopback()).expect("loopback has an ifindex");
     dispatcher.table.set_test_ifindex(key, real + 1000); // as a recreation would move it
 
     dispatcher.reconcile_interfaces(&mut reactor);
@@ -112,7 +123,9 @@ fn reconcile_counts_a_recovery_on_the_interface_captures() -> io::Result<()> {
 fn a_periodic_reread_picks_up_an_unannounced_address_change() -> io::Result<()> {
     let mut reactor = Reactor::new()?;
     let mut dispatcher = PacketDispatcher::new();
-    let key = dispatcher.table.find_or_add_interface(LOOPBACK_IFACE)?;
+    let key = dispatcher
+        .table
+        .find_or_add_interface(&InterfaceName::loopback())?;
     let capture = dispatcher.table.add_test_capture(); // links the first interface
     let kernel = *dispatcher
         .table
@@ -477,10 +490,10 @@ impl PacketHandler for Echo {
 fn routes_a_captured_packet_to_a_matching_reflector() -> io::Result<()> {
     let _serial = loopback_lock();
     let mut dispatcher = PacketDispatcher::new();
-    let Some(ingress) = open_capture_or_skip(&mut dispatcher, LOOPBACK_IFACE)? else {
+    let Some(ingress) = open_capture_or_skip(&mut dispatcher, &InterfaceName::loopback())? else {
         return Ok(());
     };
-    let Some(egress) = open_capture_or_skip(&mut dispatcher, LOOPBACK_IFACE)? else {
+    let Some(egress) = open_capture_or_skip(&mut dispatcher, &InterfaceName::loopback())? else {
         return Ok(());
     };
 
@@ -655,7 +668,7 @@ fn peers_whose_frames_share_a_checksum_each_get_a_copy() -> io::Result<()> {
 fn a_unicast_mdns_answer_from_a_peer_goes_to_the_group() -> io::Result<()> {
     use std::io::Write as _;
 
-    use crate::interface::Interface;
+    use crate::interface::{Interface, LOOPBACK_IFACE};
     use crate::net::frame;
     use crate::net::mdns::{MDNS_GROUP_V4, MDNS_PORT};
     use crate::reflector::{InterfaceMap, mdns};
@@ -666,10 +679,10 @@ fn a_unicast_mdns_answer_from_a_peer_goes_to_the_group() -> io::Result<()> {
     };
     assert!(tun.add_address("10.99.200.1/24"));
     let mut dispatcher = PacketDispatcher::without_group_joins();
-    let source = dispatcher.open_capture(LOOPBACK_IFACE)?;
+    let source = dispatcher.open_capture(&InterfaceName::loopback())?;
     let target = dispatcher.open_capture(&tun.name)?;
     let mut interfaces = InterfaceMap::default();
-    interfaces.insert(LOOPBACK_IFACE.to_owned(), source);
+    interfaces.insert(InterfaceName::loopback(), source);
     interfaces.insert(tun.name.clone(), target);
     let entry = crate::config::Config::from_sources(
         Some(&format!(
@@ -683,7 +696,7 @@ fn a_unicast_mdns_answer_from_a_peer_goes_to_the_group() -> io::Result<()> {
     .reflectors
     .remove(0);
     mdns::build(&entry, &interfaces, &mut dispatcher).expect("build the mDNS reflector");
-    let mut observer = Capture::open(&Interface::open(LOOPBACK_IFACE)?)?;
+    let mut observer = Capture::open(&Interface::open(&InterfaceName::loopback())?)?;
 
     // A DNS header with QR set: a response with no records.
     let answer = [0, 0, 0x84, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -736,7 +749,7 @@ fn a_unicast_mdns_answer_from_a_peer_goes_to_the_group() -> io::Result<()> {
 fn an_mdns_answer_goes_to_the_source_peers() -> io::Result<()> {
     use std::io::Write as _;
 
-    use crate::interface::Interface;
+    use crate::interface::{Interface, LOOPBACK_IFACE};
     use crate::net::frame;
     use crate::net::mdns::{MDNS_GROUP_V4, MDNS_PORT};
     use crate::reflector::{InterfaceMap, mdns};
@@ -747,10 +760,10 @@ fn an_mdns_answer_goes_to_the_source_peers() -> io::Result<()> {
     };
     assert!(tun.add_address("10.99.201.1/24"));
     let mut dispatcher = PacketDispatcher::without_group_joins();
-    let source = dispatcher.open_capture(LOOPBACK_IFACE)?;
+    let source = dispatcher.open_capture(&InterfaceName::loopback())?;
     let target = dispatcher.open_capture(&tun.name)?;
     let mut interfaces = InterfaceMap::default();
-    interfaces.insert(LOOPBACK_IFACE.to_owned(), source);
+    interfaces.insert(InterfaceName::loopback(), source);
     interfaces.insert(tun.name.clone(), target);
     let peer = Ipv4Addr::new(127, 0, 0, 2);
     let entry = crate::config::Config::from_sources(
@@ -765,7 +778,7 @@ fn an_mdns_answer_goes_to_the_source_peers() -> io::Result<()> {
     .reflectors
     .remove(0);
     mdns::build(&entry, &interfaces, &mut dispatcher).expect("build the mDNS reflector");
-    let mut observer = Capture::open(&Interface::open(LOOPBACK_IFACE)?)?;
+    let mut observer = Capture::open(&Interface::open(&InterfaceName::loopback())?)?;
 
     // A DNS header with QR set: a response with no records, sent to the group.
     let answer = [0, 0, 0x84, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -832,19 +845,21 @@ fn wg_can_run() -> bool {
 /// A new `WireGuard` interface, or `None` with a note. FreeBSD: `ifconfig wg create` prints the
 /// kernel-assigned name.
 #[cfg(target_os = "freebsd")]
-fn wg_create(_tag: &str) -> Option<String> {
-    let name = sh_output("ifconfig wg create");
-    if name.is_none() {
+fn wg_create(_tag: &str) -> Option<InterfaceName> {
+    let Some(name) = sh_output("ifconfig wg create") else {
         skip(Capability::WireGuard, "could not create a wg interface");
-    }
-    name
+        return None;
+    };
+    Some(name.parse().expect("the kernel assigned a valid name"))
 }
 
 /// Linux: names are caller-chosen; `tag` keeps one fixture's interfaces apart from another's, the
 /// pid two test processes.
 #[cfg(target_os = "linux")]
-fn wg_create(tag: &str) -> Option<String> {
-    let name = format!("nf{tag}{}", std::process::id() % 100_000);
+fn wg_create(tag: &str) -> Option<InterfaceName> {
+    let name: InterfaceName = format!("nf{tag}{}", std::process::id() % 100_000)
+        .parse()
+        .expect("a valid wg name");
     if sh(&format!("ip link add {name} type wireguard")) {
         Some(name)
     } else {
@@ -854,17 +869,17 @@ fn wg_create(tag: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "freebsd")]
-fn wg_address_and_up(name: &str, cidr: &str) -> String {
+fn wg_address_and_up(name: &InterfaceName, cidr: &str) -> String {
     format!("ifconfig {name} inet {cidr} up")
 }
 
 #[cfg(target_os = "linux")]
-fn wg_address_and_up(name: &str, cidr: &str) -> String {
+fn wg_address_and_up(name: &InterfaceName, cidr: &str) -> String {
     format!("ip addr add {cidr} dev {name} && ip link set {name} up")
 }
 
 #[cfg(any(target_os = "freebsd", target_os = "linux"))]
-fn wg_destroy(name: &str) {
+fn wg_destroy(name: &InterfaceName) {
     #[cfg(target_os = "freebsd")]
     sh(&format!("ifconfig {name} destroy"));
     #[cfg(target_os = "linux")]
@@ -875,7 +890,7 @@ fn wg_destroy(name: &str) {
 /// root with wg(8): from base on FreeBSD, wireguard-tools on Linux.
 #[cfg(any(target_os = "freebsd", target_os = "linux"))]
 struct WgPeers {
-    name: String,
+    name: InterfaceName,
     reachable: IpAddr,
     unreachable: IpAddr,
 }
@@ -927,8 +942,8 @@ impl Drop for WgPeers {
 /// arrives on `far` as received traffic.
 #[cfg(any(target_os = "freebsd", target_os = "linux"))]
 struct WgLink {
-    near: String,
-    far: String,
+    near: InterfaceName,
+    far: InterfaceName,
 }
 
 #[cfg(any(target_os = "freebsd", target_os = "linux"))]
@@ -1236,7 +1251,9 @@ fn route_drops_our_own_echoed_frames_before_any_handler() -> io::Result<()> {
     let mut dispatcher = PacketDispatcher::new();
     let mut reactor = Reactor::new()?;
     // The capture-less entry links to interface 0: give that interface a known MAC.
-    let interface = dispatcher.table.find_or_add_interface(LOOPBACK_IFACE)?;
+    let interface = dispatcher
+        .table
+        .find_or_add_interface(&InterfaceName::loopback())?;
     let own = MacAddr::from([0x02, 0, 0, 0, 0, 1]);
     dispatcher.table.set_test_addrs(
         interface,
@@ -1470,7 +1487,7 @@ impl PacketHandler for Reentrant {
 fn reentrant_drain_on_the_same_ingress_hits_the_guard() -> io::Result<()> {
     let _serial = loopback_lock();
     let mut dispatcher = PacketDispatcher::new();
-    let Some(ingress) = open_capture_or_skip(&mut dispatcher, LOOPBACK_IFACE)? else {
+    let Some(ingress) = open_capture_or_skip(&mut dispatcher, &InterfaceName::loopback())? else {
         return Ok(());
     };
 
@@ -1542,10 +1559,10 @@ impl PacketHandler for CrossDrainer {
 fn reentrant_drain_on_another_ingress_trips_the_assert() -> io::Result<()> {
     let _serial = loopback_lock();
     let mut dispatcher = PacketDispatcher::new();
-    let Some(a) = open_capture_or_skip(&mut dispatcher, LOOPBACK_IFACE)? else {
+    let Some(a) = open_capture_or_skip(&mut dispatcher, &InterfaceName::loopback())? else {
         return Ok(());
     };
-    let Some(b) = open_capture_or_skip(&mut dispatcher, LOOPBACK_IFACE)? else {
+    let Some(b) = open_capture_or_skip(&mut dispatcher, &InterfaceName::loopback())? else {
         return Ok(());
     };
 
@@ -1593,10 +1610,10 @@ fn reentrant_drain_on_another_ingress_trips_the_assert() -> io::Result<()> {
 fn reactor_drives_the_dispatcher_to_route_a_packet() -> io::Result<()> {
     let _serial = loopback_lock();
     let mut dispatcher = PacketDispatcher::new();
-    let Some(ingress) = open_capture_or_skip(&mut dispatcher, LOOPBACK_IFACE)? else {
+    let Some(ingress) = open_capture_or_skip(&mut dispatcher, &InterfaceName::loopback())? else {
         return Ok(());
     };
-    let Some(egress) = open_capture_or_skip(&mut dispatcher, LOOPBACK_IFACE)? else {
+    let Some(egress) = open_capture_or_skip(&mut dispatcher, &InterfaceName::loopback())? else {
         return Ok(());
     };
 
@@ -1697,7 +1714,7 @@ impl PacketHandler for MidDrainProbe {
 fn ingress_resolves_and_drops_while_taken_out() -> io::Result<()> {
     let _serial = loopback_lock();
     let mut dispatcher = PacketDispatcher::new();
-    let Some(ingress) = open_capture_or_skip(&mut dispatcher, LOOPBACK_IFACE)? else {
+    let Some(ingress) = open_capture_or_skip(&mut dispatcher, &InterfaceName::loopback())? else {
         return Ok(());
     };
 

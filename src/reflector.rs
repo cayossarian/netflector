@@ -25,7 +25,7 @@ use crate::config::{AddressFamily, PeerList, Reflector};
 use crate::dispatch::{
     CaptureKey, DatagramSource, MessageType, PacketDispatcher, join_capped, join_deferrable,
 };
-use crate::interface::InterfaceAddresses;
+use crate::interface::{InterfaceAddresses, InterfaceName};
 use crate::linear_map::LinearMap;
 use crate::logging::WARN_WINDOW;
 use crate::net::LinkType;
@@ -151,20 +151,20 @@ impl fmt::Display for IpFamily {
 /// Interface name → the capture `run()` opened for it; the `build` functions resolve `source_if` /
 /// `target_if` through it.
 #[derive(Default)]
-pub(crate) struct InterfaceMap(LinearMap<String, CaptureKey>);
+pub(crate) struct InterfaceMap(LinearMap<InterfaceName, CaptureKey>);
 
 impl InterfaceMap {
-    pub(crate) fn insert(&mut self, name: String, key: CaptureKey) {
+    pub(crate) fn insert(&mut self, name: InterfaceName, key: CaptureKey) {
         self.0.insert(name, key);
     }
 
-    pub(crate) fn key_for(&self, name: &str) -> Option<CaptureKey> {
+    pub(crate) fn key_for(&self, name: &InterfaceName) -> Option<CaptureKey> {
         self.0.get(name).copied()
     }
 
-    pub(crate) fn require(&self, name: &str) -> Result<CaptureKey, BuildError> {
+    pub(crate) fn require(&self, name: &InterfaceName) -> Result<CaptureKey, BuildError> {
         self.key_for(name)
-            .ok_or_else(|| BuildError::UnknownInterface(name.to_owned()))
+            .ok_or_else(|| BuildError::UnknownInterface(name.to_string()))
     }
 }
 
@@ -302,34 +302,28 @@ fn open_pair(
     protocol: &str,
     groups: &[SocketAddr],
 ) -> Result<(CaptureKey, CaptureKey), BuildError> {
-    let source = interfaces.require(reflector.source_if.as_str())?;
-    let target = interfaces.require(reflector.target_if.as_str())?;
+    let source = interfaces.require(&reflector.source_if)?;
+    let target = interfaces.require(&reflector.target_if)?;
     require_both_sides_family(
         dispatcher,
         reflector.address_family,
         source,
-        reflector.source_if.as_str(),
+        &reflector.source_if,
         target,
-        reflector.target_if.as_str(),
+        &reflector.target_if,
     )?;
     require_macs_matchable(
         dispatcher,
         reflector.macs.as_ref(),
         target,
-        reflector.target_if.as_str(),
+        &reflector.target_if,
     )?;
     for group in groups {
         for (capture, interface) in [
             (source, &reflector.source_if),
             (target, &reflector.target_if),
         ] {
-            require_group_join(
-                dispatcher,
-                capture,
-                group.ip(),
-                protocol,
-                interface.as_str(),
-            )?;
+            require_group_join(dispatcher, capture, group.ip(), protocol, interface)?;
         }
     }
     Ok((source, target))
