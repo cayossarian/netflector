@@ -174,6 +174,11 @@ impl crate::reflector::ReplyRewrite for ReplaceRewrite {
     ) -> Option<&'a [u8]> {
         Some(b"REWRITTEN")
     }
+
+    /// Stands in for DIAL's rewrite, which names our own listener.
+    fn keeps_advertised_addresses(&self) -> bool {
+        false
+    }
 }
 
 /// A tun device attached to this process: its kernel side is a raw IP link, `far_end` the other

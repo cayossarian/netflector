@@ -157,7 +157,8 @@ pub(crate) struct SimpleReflector<C> {
     classify: C,
     emit: Emit,
     rewrite: Box<dyn ReplyRewrite>,
-    /// The unreachable-advertisement check, consulted only for payloads `rewrite` left untouched.
+    /// The unreachable-advertisement check, run on the payload that goes out unless `rewrite`
+    /// replaced it and opted out (DIAL's, which names our own listener).
     suppress: fn(&[u8]) -> bool,
 }
 
@@ -217,6 +218,7 @@ impl<C: Classify> PacketHandler for SimpleReflector<C> {
             Verdict::Reflect(message_type) => message_type,
             Verdict::Skip(message_type) => return Outcome::Skipped(message_type),
             Verdict::Excluded => return Outcome::Filtered,
+            Verdict::Refused(message_type) => return Outcome::Dropped(message_type),
             Verdict::Junk => {
                 log::debug!(
                     "{}: dropping unrecognized payload ({} B) to {} from {}",
@@ -561,6 +563,34 @@ mod tests {
         );
         // And the exempt payload completed the reflect: it was sent, not merely spared the gate.
         assert_eq!(outcome, Outcome::Reflected(MessageType::MdnsResponse));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "needs a real capture device")]
+    fn a_refused_message_counts_as_dropped() {
+        // Right direction, deliberately not re-emitted: ranked like a suppression, above the
+        // skips another leg reports for the same packet.
+        fn refuse_all(_: &[u8]) -> Verdict {
+            Verdict::Refused(MessageType::MdnsResponse)
+        }
+        let _serial = loopback_lock();
+        let mut dispatcher = PacketDispatcher::new();
+        let Some(egress) = open_loopback_or_skip(&mut dispatcher) else {
+            return;
+        };
+        let mut reactor = Reactor::new().expect("reactor");
+        let mut reflector = SimpleReflector::new(
+            egress,
+            Delivery::Link,
+            "TEST",
+            "response",
+            refuse_all as fn(&[u8]) -> Verdict,
+            Emit::fixed(5353, 255),
+        );
+        assert_eq!(
+            reflector.on_packet(&group_packet(), &mut dispatcher, &mut reactor),
+            Outcome::Dropped(MessageType::MdnsResponse)
+        );
     }
 
     /// A rewrite that only removes records: what is left still names the far link's addresses.

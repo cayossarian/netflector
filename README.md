@@ -358,10 +358,11 @@ never count against a message.
   records with them. A response naming both is re-emitted with the refused records removed, the one
   case where mDNS is not relayed verbatim. Devices commonly bundle several services in one message, so the
   trim is what keeps a refused service from riding along.
-- A message that cannot be parsed is dropped whenever the list is set.
+- A message that cannot be walked within bounds (truncated, a looping name, or several times
+  more work than its length) is dropped as unrecognized whenever the list is set.
 
 The list composes with `macs` (both must admit a response) and with `address_family`. Refusals are
-logged at `debug` and counted as `filtered`.
+logged at `debug` and counted as `dropped`, as a suppression is.
 
 ### `address_family`
 

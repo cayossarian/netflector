@@ -58,9 +58,11 @@ impl Gate {
     fn verdict(&self, payload: &[u8]) -> Verdict {
         let verdict = directional_verdict(classify(payload), self.kind);
         match (verdict, &self.services) {
-            (Verdict::Reflect(_), Some(services)) if scope(payload, services) == Scope::Refuse => {
-                Verdict::Excluded
-            }
+            (Verdict::Reflect(message_type), Some(services)) => match scope(payload, services) {
+                Scope::Refuse => Verdict::Refused(message_type),
+                Scope::Malformed => Verdict::Junk,
+                Scope::Pass | Scope::Trim => verdict,
+            },
             _ => verdict,
         }
     }
@@ -69,7 +71,7 @@ impl Gate {
 impl Classify for Gate {
     fn classify(&self, packet: &Packet) -> Verdict {
         let verdict = self.verdict(packet.payload);
-        if verdict == Verdict::Excluded {
+        if let Verdict::Refused(_) = verdict {
             log::debug!(
                 "mDNS: not reflecting {:?} from {}: it names only services outside mdns_services",
                 self.kind,
@@ -259,7 +261,7 @@ mod tests {
         let responses = Gate::new(MdnsKind::Response, services);
         assert_eq!(
             queries.verdict(&ptr_query("_hap._tcp.local")),
-            Verdict::Excluded
+            Verdict::Refused(MessageType::MdnsQuery)
         );
         assert_eq!(
             queries.verdict(&ptr_query("_ipp._tcp.local")),
@@ -267,8 +269,12 @@ mod tests {
         );
         assert_eq!(
             responses.verdict(&ptr_response(&[("_hap._tcp.local", "L._hap._tcp.local")])),
-            Verdict::Excluded
+            Verdict::Refused(MessageType::MdnsResponse)
         );
+        // A message the allow-list cannot walk is junk, not a refusal of some service.
+        let mut truncated = ptr_response(&[("_ipp._tcp.local", "L._ipp._tcp.local")]);
+        truncated.truncate(truncated.len() - 3);
+        assert_eq!(responses.verdict(&truncated), Verdict::Junk);
         // A mixed response is reflected; the trim takes the refused records out.
         let mixed = ptr_response(&[
             ("_hap._tcp.local", "L._hap._tcp.local"),

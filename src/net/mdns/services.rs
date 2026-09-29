@@ -1,5 +1,6 @@
 //! The DNS-SD service-type allow-list an mDNS entry can carry (`mdns_services`).
 
+use std::cell::Cell;
 use std::fmt::{self, Write as _};
 use std::str::FromStr;
 
@@ -39,6 +40,7 @@ const TYPE_PX: u16 = 26;
 const TYPE_SRV: u16 = 33;
 const TYPE_KX: u16 = 36;
 const TYPE_NSEC: u16 = 47;
+const TYPE_DNAME: u16 = 39;
 
 /// The transport label of a service type (RFC 6763 §7): `_tcp`, or `_udp` for everything else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +168,9 @@ pub(crate) enum Scope {
     Refuse,
     /// A response carrying both: relay it with the refused records removed.
     Trim,
+    /// Not walkable within bounds: truncated, a reserved label type, a looping or overlong name,
+    /// or more work than the message is long. Never relayed while a list is set.
+    Malformed,
 }
 
 /// A message this module cannot walk: truncated, a reserved label type, a looping or overlong
@@ -173,29 +178,52 @@ pub(crate) enum Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Malformed;
 
+/// Label and pointer steps one message may cost across every walk of its names. Real traffic
+/// stays under 1.5 per byte; a crafted message whose records all point into one long chain would
+/// cost dozens, so it is refused as malformed before it can starve the reactor.
+const STEPS_PER_BYTE: usize = 4;
+
+/// The steps left for one message; see [`STEPS_PER_BYTE`].
+struct Budget(Cell<usize>);
+
+impl Budget {
+    fn for_message(payload: &[u8]) -> Self {
+        Self(Cell::new(payload.len().saturating_mul(STEPS_PER_BYTE)))
+    }
+
+    fn spend(&self) -> Result<(), Malformed> {
+        let left = self.0.get().checked_sub(1).ok_or(Malformed)?;
+        self.0.set(left);
+        Ok(())
+    }
+}
+
 /// A name's labels in order, compression pointers followed (RFC 1035 §4.1.4). Yields one error and
 /// then ends.
-struct Labels<'a> {
+struct Labels<'a, 'b> {
     payload: &'a [u8],
     at: usize,
     hops: usize,
     len: usize,
     done: bool,
+    budget: &'b Budget,
 }
 
-impl<'a> Labels<'a> {
-    fn new(payload: &'a [u8], at: usize) -> Self {
+impl<'a, 'b> Labels<'a, 'b> {
+    fn new(payload: &'a [u8], at: usize, budget: &'b Budget) -> Self {
         Self {
             payload,
             at,
             hops: 0,
             len: 0,
             done: false,
+            budget,
         }
     }
 
     fn step(&mut self) -> Result<Option<&'a [u8]>, Malformed> {
         loop {
+            self.budget.spend()?;
             let len = *self.payload.get(self.at).ok_or(Malformed)?;
             match len {
                 0 => return Ok(None),
@@ -226,7 +254,7 @@ impl<'a> Labels<'a> {
     }
 }
 
-impl<'a> Iterator for Labels<'a> {
+impl<'a> Iterator for Labels<'a, '_> {
     type Item = Result<&'a [u8], Malformed>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -264,15 +292,15 @@ struct Entry {
 
 impl Entry {
     /// Every name the entry carries is walkable, and each inline part ends inside its rdata.
-    fn check_names(self, payload: &[u8]) -> Result<(), Malformed> {
-        check_name(payload, self.name)?;
+    fn check_names(self, payload: &[u8], budget: &Budget) -> Result<(), Malformed> {
+        check_name(payload, self.name, budget)?;
         let Some((offset, count)) = rdata_names(self.rtype).filter(|_| self.rdata < self.end)
         else {
             return Ok(());
         };
         let mut at = self.rdata + offset;
         for _ in 0..count {
-            check_name(payload, at)?;
+            check_name(payload, at, budget)?;
             at = skip_name(payload, at).ok_or(Malformed)?;
             if at > self.end {
                 return Err(Malformed);
@@ -282,14 +310,18 @@ impl Entry {
     }
 
     /// The service type the entry falls under: a PTR's by its target, else by its owner.
-    fn service(self, payload: &[u8]) -> Result<Option<(&[u8], Proto)>, Malformed> {
+    fn service<'a>(
+        self,
+        payload: &'a [u8],
+        budget: &Budget,
+    ) -> Result<Option<(&'a [u8], Proto)>, Malformed> {
         if self.rtype == TYPE_PTR
             && self.rdata < self.end
-            && let Some(service) = service_of(payload, self.rdata)?
+            && let Some(service) = service_of(payload, self.rdata, budget)?
         {
             return Ok(Some(service));
         }
-        service_of(payload, self.name)
+        service_of(payload, self.name, budget)
     }
 }
 
@@ -401,18 +433,30 @@ impl Trimmer {
             return None;
         }
         if self.rewrite(payload).is_err() {
-            // `scope` walked every name the rewrite does; failing here is a bug. Fail closed with
-            // a message that carries nothing rather than relay the untrimmed one.
-            debug_assert!(false, "a message scope accepted could not be rewritten");
-            self.out.truncate(DNS_HEADER_LEN);
-            self.out[QDCOUNT_AT..DNS_HEADER_LEN].fill(0);
+            // Not expected: `scope` walked every name the rewrite does, within the same budget.
+            // `None` would relay the untrimmed message verbatim, so fail closed instead.
+            self.empty_like(payload);
         }
         Some(&self.out)
     }
 
-    fn rewrite(&mut self, payload: &[u8]) -> Result<(), Malformed> {
+    /// `payload`'s header with no entries: what a trim that cannot complete relays.
+    fn empty_like(&mut self, payload: &[u8]) {
         self.out.clear();
-        self.out.extend_from_slice(&payload[..DNS_HEADER_LEN]);
+        self.out.extend_from_slice(
+            payload
+                .get(..DNS_HEADER_LEN)
+                .unwrap_or(&[0; DNS_HEADER_LEN]),
+        );
+        self.out[QDCOUNT_AT..DNS_HEADER_LEN].fill(0);
+    }
+
+    /// Bounds-checked throughout, so input `scope` never vetted is an error, never a panic.
+    fn rewrite(&mut self, payload: &[u8]) -> Result<(), Malformed> {
+        let budget = Budget::for_message(payload);
+        self.out.clear();
+        self.out
+            .extend_from_slice(payload.get(..DNS_HEADER_LEN).ok_or(Malformed)?);
         self.placed.clear();
         self.placed.resize(payload.len(), UNPLACED);
         let mut counts = [0u16; 4];
@@ -420,12 +464,12 @@ impl Trimmer {
             let entry = entry?;
             let keep = entry.section == Section::Question
                 || entry
-                    .service(payload)?
+                    .service(payload, &budget)?
                     .is_none_or(|service| allows(&self.allowed, service));
             if !keep {
                 continue;
             }
-            self.write_entry(payload, entry)?;
+            self.write_entry(payload, entry, &budget)?;
             counts[entry.section as usize] += 1;
         }
         for (count, at) in counts
@@ -437,37 +481,49 @@ impl Trimmer {
         Ok(())
     }
 
-    fn write_entry(&mut self, payload: &[u8], entry: Entry) -> Result<(), Malformed> {
-        self.write_name(payload, entry.name)?;
+    fn write_entry(
+        &mut self,
+        payload: &[u8],
+        entry: Entry,
+        budget: &Budget,
+    ) -> Result<(), Malformed> {
+        let span = |from: usize, to: usize| payload.get(from..to).ok_or(Malformed);
+        self.write_name(payload, entry.name, budget)?;
         if entry.section == Section::Question {
-            self.out.extend_from_slice(&payload[entry.fixed..entry.end]);
+            self.out.extend_from_slice(span(entry.fixed, entry.end)?);
             return Ok(());
         }
         // TYPE, CLASS and TTL; RDLENGTH is patched once the rdata is written.
         self.out
-            .extend_from_slice(&payload[entry.fixed..entry.fixed + 8]);
+            .extend_from_slice(span(entry.fixed, entry.fixed + 8)?);
         let length_at = self.out.len();
         self.out.extend_from_slice(&[0, 0]);
         match rdata_names(entry.rtype).filter(|_| entry.rdata < entry.end) {
             Some((offset, count)) => {
                 let mut at = entry.rdata + offset;
-                self.out.extend_from_slice(&payload[entry.rdata..at]);
+                self.out.extend_from_slice(span(entry.rdata, at)?);
                 for _ in 0..count {
-                    self.write_name(payload, at)?;
+                    self.write_name(payload, at, budget)?;
                     at = skip_name(payload, at).ok_or(Malformed)?;
                 }
-                self.out.extend_from_slice(&payload[at..entry.end]);
+                self.out.extend_from_slice(span(at, entry.end)?);
             }
-            None => self.out.extend_from_slice(&payload[entry.rdata..entry.end]),
+            None => self.out.extend_from_slice(span(entry.rdata, entry.end)?),
         }
         let length = u16::try_from(self.out.len() - length_at - 2).map_err(|_| Malformed)?;
         self.out[length_at..length_at + 2].copy_from_slice(&length.to_be_bytes());
         Ok(())
     }
 
-    fn write_name(&mut self, payload: &[u8], mut at: usize) -> Result<(), Malformed> {
+    fn write_name(
+        &mut self,
+        payload: &[u8],
+        mut at: usize,
+        budget: &Budget,
+    ) -> Result<(), Malformed> {
         let mut hops = 0;
         loop {
+            budget.spend()?;
             let placed = self.placed.get(at).copied().unwrap_or(UNPLACED);
             if placed != UNPLACED {
                 self.out.extend_from_slice(&(0xc000 | placed).to_be_bytes());
@@ -512,15 +568,16 @@ impl Trimmer {
 /// and none is allowed, its address records included: they ride with the refused services. A
 /// response naming no service at all (a hostname answer) passes.
 pub(crate) fn scope(payload: &[u8], allowed: &[ServiceType]) -> Scope {
-    assess(payload, allowed).unwrap_or(Scope::Refuse)
+    assess(payload, allowed).unwrap_or(Scope::Malformed)
 }
 
 fn assess(payload: &[u8], allowed: &[ServiceType]) -> Result<Scope, Malformed> {
     let kind = classify(payload).ok_or(Malformed)?;
+    let budget = Budget::for_message(payload);
     let (mut granted, mut refused, mut unscoped) = (false, false, false);
     for entry in Entries::new(payload) {
         let entry = entry?;
-        entry.check_names(payload)?;
+        entry.check_names(payload, &budget)?;
         let asked = match kind {
             MdnsKind::Query => entry.section == Section::Question,
             MdnsKind::Response => entry.section != Section::Question,
@@ -528,7 +585,7 @@ fn assess(payload: &[u8], allowed: &[ServiceType]) -> Result<Scope, Malformed> {
         if !asked {
             continue;
         }
-        match entry.service(payload)? {
+        match entry.service(payload, &budget)? {
             None => unscoped = true,
             Some(service) if allows(allowed, service) => granted = true,
             Some(_) => refused = true,
@@ -551,10 +608,14 @@ fn assess(payload: &[u8], allowed: &[ServiceType]) -> Result<Scope, Malformed> {
 /// domain, as the service label (underscore stripped) and transport. The DNS-SD meta-names
 /// (`_services._dns-sd._udp`, the browse-domain `b._dns-sd._udp`) are infrastructure, not a
 /// service, so their pair does not count.
-fn service_of(payload: &[u8], at: usize) -> Result<Option<(&[u8], Proto)>, Malformed> {
+fn service_of<'a>(
+    payload: &'a [u8],
+    at: usize,
+    budget: &Budget,
+) -> Result<Option<(&'a [u8], Proto)>, Malformed> {
     let mut previous: Option<&[u8]> = None;
     let mut found = None;
-    for label in Labels::new(payload, at) {
+    for label in Labels::new(payload, at, budget) {
         let label = label?;
         if let (Some(service), Some(proto)) = (previous, Proto::from_label(label))
             && let Some(service) = service.strip_prefix(b"_")
@@ -574,13 +635,13 @@ fn allows(allowed: &[ServiceType], (service, proto): (&[u8], Proto)) -> bool {
 }
 
 /// Where names sit in the rdata of the types that may compress them: the fixed octets before the
-/// first name, and how many names follow back to back. RFC 3597 §4 lists the RFC 1035-era types;
-/// RFC 6762 §18.14 adds SRV and NSEC for mDNS. Any other rdata holds no compressed name, so it is
-/// opaque octets.
+/// first name, and how many names follow back to back. RFC 6762 §18.14 lists them for mDNS (NS,
+/// CNAME, PTR, DNAME, SOA, MX, AFSDB, RT, KX, RP, PX, SRV, NSEC); RFC 3597 §4 adds the obsolete
+/// RFC 1035 types. Any other rdata holds no compressed name, so it is opaque octets.
 fn rdata_names(rtype: u16) -> Option<(usize, usize)> {
     match rtype {
         TYPE_NS | TYPE_MD | TYPE_MF | TYPE_CNAME | TYPE_MB | TYPE_MG | TYPE_MR | TYPE_PTR
-        | TYPE_NSEC => Some((0, 1)),
+        | TYPE_NSEC | TYPE_DNAME => Some((0, 1)),
         TYPE_SOA | TYPE_MINFO | TYPE_RP => Some((0, 2)),
         TYPE_MX | TYPE_AFSDB | TYPE_RT | TYPE_KX => Some((2, 1)),
         TYPE_PX => Some((2, 2)),
@@ -589,8 +650,8 @@ fn rdata_names(rtype: u16) -> Option<(usize, usize)> {
     }
 }
 
-fn check_name(payload: &[u8], at: usize) -> Result<(), Malformed> {
-    Labels::new(payload, at).try_for_each(|label| label.map(|_| ()))
+fn check_name(payload: &[u8], at: usize, budget: &Budget) -> Result<(), Malformed> {
+    Labels::new(payload, at, budget).try_for_each(|label| label.map(|_| ()))
 }
 
 #[cfg(test)]
@@ -838,7 +899,7 @@ mod tests {
         let subtype = response(&[(
             "_I0123456789ABCDEF._sub._matter._tcp.local",
             TYPE_PTR,
-            name("0123456789ABCDEF-0001._matter._tcp.local"),
+            name("0123456789ABCDEF-00000000000000A1._matter._tcp.local"),
         )]);
         assert_eq!(scope(&subtype, &allow("_matter._tcp")), Scope::Pass);
         assert_eq!(scope(&subtype, &allow("_hap._tcp")), Scope::Refuse);
@@ -878,24 +939,137 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_message_is_refused() {
+    fn a_malformed_message_is_its_own_scope() {
         let allowed = allow("_ipp._tcp");
         let mut truncated = response(&[("_ipp._tcp.local", TYPE_PTR, name("L._ipp._tcp.local"))]);
         truncated.truncate(truncated.len() - 3);
-        assert_eq!(scope(&truncated, &allowed), Scope::Refuse);
+        assert_eq!(scope(&truncated, &allowed), Scope::Malformed);
         // A compression pointer to itself.
         let mut looped = header(true, 0, 1);
         looped.extend_from_slice(&[0xc0, 12]);
         looped.extend_from_slice(&[0, 12, 0, 1, 0, 0, 0, 120, 0, 0]);
-        assert_eq!(scope(&looped, &allowed), Scope::Refuse);
-        assert_eq!(scope(b"", &allowed), Scope::Refuse);
+        assert_eq!(scope(&looped, &allowed), Scope::Malformed);
+        assert_eq!(scope(b"", &allowed), Scope::Malformed);
+    }
+
+    /// A response whose every record names one long chain of compression pointers: legal hop by
+    /// hop, but walking it for each record costs far more than the message is long.
+    fn pointer_chain_response(hops: usize, records: usize) -> Vec<u8> {
+        let mut m = header(true, 0, 0);
+        // `_ipp._tcp.local`, then `hops` one-label names, each pointing at the one before.
+        let base = m.len();
+        m.extend(name("_ipp._tcp.local"));
+        let mut tail = base;
+        for _ in 0..hops {
+            let here = m.len();
+            m.extend_from_slice(&[
+                1,
+                b'x',
+                0xc0 | u8::try_from(tail >> 8).unwrap(),
+                u8::try_from(tail & 0xff).unwrap(),
+            ]);
+            tail = here;
+        }
+        // The chain is not itself a record: move it inside the first record's rdata so the
+        // message stays well formed, then point every record's owner at its far end.
+        let chain = m.split_off(base);
+        let mut out = header(true, 0, records);
+        let offset = out.len() + 12;
+        let shift = |p: usize| p - base + offset;
+        let mut rdata = chain.clone();
+        let mut at = 0;
+        while at < rdata.len() {
+            let n = rdata[at];
+            if n & 0xc0 == 0xc0 {
+                let target = shift((usize::from(n & 0x3f) << 8) | usize::from(rdata[at + 1]));
+                rdata[at] = 0xc0 | u8::try_from(target >> 8).unwrap();
+                rdata[at + 1] = u8::try_from(target & 0xff).unwrap();
+                at += 2;
+            } else if n == 0 {
+                at += 1;
+            } else {
+                at += 1 + usize::from(n);
+            }
+        }
+        let far_end = shift(tail);
+        for i in 0..records {
+            out.extend_from_slice(&[
+                0xc0 | u8::try_from(far_end >> 8).unwrap(),
+                u8::try_from(far_end & 0xff).unwrap(),
+            ]);
+            out.extend_from_slice(&[0, 16, 0, 1, 0, 0, 0, 120]);
+            let rd: &[u8] = if i == 0 { &rdata } else { &[] };
+            out.extend_from_slice(&u16::try_from(rd.len()).unwrap().to_be_bytes());
+            out.extend_from_slice(rd);
+        }
+        out
+    }
+
+    #[test]
+    fn the_work_per_message_is_bounded() {
+        let allowed = allow("_ipp._tcp");
+        // A handful of records over a short chain is ordinary and still scoped.
+        assert_eq!(scope(&pointer_chain_response(3, 4), &allowed), Scope::Pass);
+        // Hundreds of records over a 120-hop chain would walk ~40 steps per byte: refused as
+        // malformed long before, whatever the allow-list says.
+        let heavy = pointer_chain_response(120, 300);
+        assert_eq!(scope(&heavy, &allowed), Scope::Malformed);
+        assert_eq!(Trimmer::new(allowed).trim(&heavy), None);
+    }
+
+    #[test]
+    fn a_dname_target_pointing_into_a_dropped_record_is_spelled_out() {
+        // Record 1 (refused) owns `local`; record 2 (allowed) keeps the message a trim; record 3 is
+        // a DNAME whose target is a pointer to record 1's `local`.
+        let mut m = header(true, 0, 3);
+        let first = m.len();
+        m.extend(name("_hap._tcp.local"));
+        m.extend_from_slice(&[0, 12, 0x80, 1, 0, 0, 0, 120]);
+        let target = name("L._hap._tcp.local");
+        m.extend_from_slice(&u16::try_from(target.len()).unwrap().to_be_bytes());
+        m.extend(target);
+        m.extend(name("_ipp._tcp.local"));
+        m.extend_from_slice(&[0, 12, 0x80, 1, 0, 0, 0, 120]);
+        let target = name("L._ipp._tcp.local");
+        m.extend_from_slice(&u16::try_from(target.len()).unwrap().to_be_bytes());
+        m.extend(target);
+        let local = u8::try_from(first + 1 + 4 + 1 + 4).unwrap(); // past `_hap` and `_tcp`
+        m.extend(name("alias.example"));
+        m.extend_from_slice(&[0, 39, 0x80, 1, 0, 0, 0, 120, 0, 2, 0xc0, local]);
+        let trimmed = Trimmer::new(allow("_ipp._tcp")).trim(&m).unwrap().to_vec();
+        let dname = decode(&trimmed).into_iter().find(|r| r.2 == 39).unwrap();
+        assert_eq!(dname.3, "|local|");
+    }
+
+    #[test]
+    fn a_trim_that_cannot_complete_relays_nothing() {
+        // Never the untrimmed message: the header survives, every count is zero.
+        let mut filter = Trimmer::new(allow("_ipp._tcp"));
+        filter.empty_like(&MDNS_RESPONSE_BONJOUR);
+        assert_eq!(
+            filter.out[..QDCOUNT_AT],
+            MDNS_RESPONSE_BONJOUR[..QDCOUNT_AT]
+        );
+        assert_eq!(filter.out.len(), DNS_HEADER_LEN);
+        assert!(filter.out[QDCOUNT_AT..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn the_rewrite_errs_rather_than_panics_on_unvetted_input() {
+        let mut filter = Trimmer::new(allow("_ipp._tcp"));
+        // An SRV whose RDLENGTH is shorter than its fixed fields.
+        let mut m = response(&[("_ipp._tcp.local", TYPE_SRV, vec![0, 0])]);
+        assert!(filter.rewrite(&m).is_err());
+        m.truncate(5);
+        assert!(filter.rewrite(&m).is_err());
     }
 
     /// Each record as `(section, owner, type, rdata)`, the rdata's names spelled out so a
     /// recompressed message compares equal to its original.
     fn decode(payload: &[u8]) -> Vec<(Section, String, u16, String)> {
+        let budget = Budget(Cell::new(usize::MAX));
         let text = |at: usize| {
-            Labels::new(payload, at)
+            Labels::new(payload, at, &budget)
                 .map(|label| String::from_utf8_lossy(label.unwrap()).into_owned())
                 .collect::<Vec<_>>()
                 .join(".")
