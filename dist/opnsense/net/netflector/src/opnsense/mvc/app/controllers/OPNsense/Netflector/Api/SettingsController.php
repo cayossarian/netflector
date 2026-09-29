@@ -41,7 +41,7 @@ class SettingsController extends ApiMutableModelControllerBase
             'reflectors.reflector',
             [
                 'enabled', 'name', 'source_if', 'target_if', 'description',
-                'wol', 'mdns', 'ssdp', 'dial', 'wsd', 'address_family',
+                'wol', 'mdns', 'mdns_services', 'ssdp', 'dial', 'wsd', 'address_family',
             ]
         );
     }
