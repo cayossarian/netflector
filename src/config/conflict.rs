@@ -124,7 +124,7 @@ impl Reflector {
                 }));
             }
         };
-        if self.mdns {
+        if self.mdns.is_some() {
             let v4 = IpAddr::V4(MDNS_GROUP_V4);
             let v6 = IpAddr::V6(MDNS_GROUP_V6);
             discovery(Protocol::Mdns, MDNS_PORT, &[v4, v6]);
@@ -191,7 +191,7 @@ impl Reflector {
         {
             return Some(Protocol::Wol);
         }
-        if self.mdns && other.mdns {
+        if self.mdns.is_some() && other.mdns.is_some() {
             return Some(Protocol::Mdns);
         }
         if self.ssdp.is_some() && other.ssdp.is_some() {

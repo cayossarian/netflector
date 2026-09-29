@@ -29,6 +29,7 @@ use serde::Deserialize;
 use self::conflict::check_conflicts;
 use self::raw::{RawConfig, RawReflector};
 use crate::net::mac::MacSet;
+use crate::net::mdns::services::ServiceList;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Wol {
@@ -52,6 +53,12 @@ pub(crate) struct UdpRelay {
     pub(crate) broadcast: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Mdns {
+    /// The DNS-SD service types to reflect; `None` reflects every one.
+    pub(crate) services: Option<ServiceList>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ssdp {
     pub(crate) dial: bool,
@@ -72,7 +79,7 @@ pub(crate) struct Reflector {
     pub(crate) macs: Option<MacSet>,
     pub(crate) address_family: AddressFamily,
     pub(crate) wol: Option<Wol>,
-    pub(crate) mdns: bool,
+    pub(crate) mdns: Option<Mdns>,
     pub(crate) ssdp: Option<Ssdp>,
     pub(crate) wsd: bool,
     pub(crate) bidirectional: bool,
@@ -164,6 +171,9 @@ impl TryFrom<(String, RawReflector)> for Reflector {
         if raw.wol_ports.is_some() && !raw.wol {
             return Err(ConfigError::WolPortsWithoutWol { name });
         }
+        if raw.mdns_services.is_some() && !raw.mdns {
+            return Err(ConfigError::MdnsServicesWithoutMdns { name });
+        }
         if raw.macs.is_some() && !raw.wol && !raw.mdns && !raw.ssdp && !raw.wsd {
             return Err(ConfigError::MacsUnused { name });
         }
@@ -196,7 +206,9 @@ impl TryFrom<(String, RawReflector)> for Reflector {
             macs: raw.macs,
             address_family: raw.address_family,
             wol,
-            mdns: raw.mdns,
+            mdns: raw.mdns.then_some(Mdns {
+                services: raw.mdns_services,
+            }),
             ssdp,
             wsd: raw.wsd,
             bidirectional: raw.bidirectional,
@@ -337,8 +349,14 @@ fn protocol_list(reflector: &Reflector) -> String {
         let ports: Vec<String> = wol.ports.iter().map(ToString::to_string).collect();
         protocols.push(format!("wol({})", ports.join(",")));
     }
-    if reflector.mdns {
-        protocols.push("mdns".to_owned());
+    if let Some(mdns) = &reflector.mdns {
+        protocols.push(match &mdns.services {
+            Some(services) => {
+                let services: Vec<String> = services.iter().map(ToString::to_string).collect();
+                format!("mdns({})", services.join(","))
+            }
+            None => "mdns".to_owned(),
+        });
     }
     if let Some(ssdp) = &reflector.ssdp {
         protocols.push(if ssdp.dial {

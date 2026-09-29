@@ -116,6 +116,13 @@ pub(crate) trait ReplyRewrite {
         dispatcher: &mut PacketDispatcher,
         reactor: &mut Reactor,
     ) -> Option<&'a [u8]>;
+
+    /// Whether a payload this rewrite replaced still advertises the far link's own addresses, so
+    /// the unreachable-advertisement check applies to it as to a verbatim one. DIAL's replacement
+    /// names our own listener instead; an mDNS trim only drops records.
+    fn keeps_advertised_addresses(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) struct NoRewrite;
