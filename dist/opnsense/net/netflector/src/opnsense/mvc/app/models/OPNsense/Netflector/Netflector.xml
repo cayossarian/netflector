@@ -78,9 +78,7 @@
                     <Default>0</Default>
                     <Required>Y</Required>
                 </mdns>
-                <mdns_services type="HostnameField">
-                    <IsDNSName>Y</IsDNSName>
-                    <IpAllowed>N</IpAllowed>
+                <mdns_services type=".\ServiceTypeField">
                     <AsList>Y</AsList>
                     <ValidationMessage>Enter DNS-SD service types, such as _ipp._tcp.</ValidationMessage>
                 </mdns_services>

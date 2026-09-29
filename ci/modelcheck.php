@@ -133,6 +133,50 @@ foreach (
     }
 }
 
+/* mdns_services: what the dialog accepts is exactly what the daemon accepts, so a bad type is
+   refused at Save rather than stopping the service at Apply */
+function service_messages(string $services): array
+{
+    $model = new Netflector();
+    $entry = $model->reflectors->reflector->Add();
+    $entry->enabled = '1';
+    $entry->name = 'modelcheck';
+    $entry->mdns = '1';
+    $entry->mdns_services = $services;
+    $messages = [];
+    foreach ($model->performValidation() as $message) {
+        if (str_ends_with($message->getField(), '.mdns_services')) {
+            $messages[] = $message->getMessage();
+        }
+    }
+    return $messages;
+}
+
+foreach (
+    [
+        ['_ipp._tcp', true],
+        ['_ipp._tcp,_AirPlay._TCP.local', true],
+        ['_hap._udp,_companion-link._tcp,_androidtvremote2._tcp', true],
+        ['_ipp._tcp.local.', true],
+        ['_ipp._tcp.', true],
+        ['printer.local', false],
+        ['_ipp._tcp,printer.local', false],
+        ['_ipp', false],
+        ['ipp._tcp', false],
+        ['_ipp._sctp', false],
+        ['_ipp._tcp.example', false],
+        ['_ipp._tcp..', false],
+        ['_._tcp', false],
+    ] as [$services, $expect_valid]
+) {
+    $messages = service_messages($services);
+    if ($expect_valid && $messages !== []) {
+        fail(sprintf('mdns_services=%s rejected: %s', $services, implode(' | ', $messages)));
+    } elseif (!$expect_valid && $messages === []) {
+        fail(sprintf('mdns_services=%s accepted, expected a validation error', $services));
+    }
+}
+
 /* the relay's and the peers' fields, and the one rule between them */
 function entry_messages(array $values): array
 {
