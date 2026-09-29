@@ -9,6 +9,7 @@ use super::value::{
     AddressFamily, GroupList, InterfaceName, LogLevel, PeerList, PortList, ReflectorName,
 };
 use crate::net::mac::MacSet;
+use crate::net::mdns::services::ServiceList;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,6 +49,7 @@ pub(super) struct RawReflector {
     pub(super) wol_ports: Option<PortList>,
     #[serde(default)]
     pub(super) mdns: bool,
+    pub(super) mdns_services: Option<ServiceList>,
     #[serde(default)]
     pub(super) ssdp: bool,
     #[serde(default)]

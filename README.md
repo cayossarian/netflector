@@ -32,7 +32,7 @@ reflected protocols and the relay; the DIAL proxy layers onto SSDP.
 
 - [Platform support](#platform-support)
 - [Run](#run): [privileges](#runtime-privileges), [Docker](#run-in-docker), [MikroTik](#on-mikrotik-routeros), [FreeBSD/OPNsense packages](#install-on-freebsd-and-opnsense)
-- [Configuration](#configuration): [env vars](#environment-variables), [`macs`](#the-macs-field), [`address_family`](#address_family), [per-protocol behavior](#per-protocol-behavior), [DIAL](#dial), [UDP relay](#udp-relay), [duplicate detection](#duplicate-detection)
+- [Configuration](#configuration): [env vars](#environment-variables), [`macs`](#the-macs-field), [`mdns_services`](#the-mdns_services-field), [`address_family`](#address_family), [per-protocol behavior](#per-protocol-behavior), [DIAL](#dial), [UDP relay](#udp-relay), [duplicate detection](#duplicate-detection)
 - [Diagnostics](#diagnostics)
 - [Developing](#developing)
 - [License](#license)
@@ -256,6 +256,7 @@ source_peers = ["10.0.0.2"]      # optional; the same for source_if
 macs      = ["B0:37:95:C5:60:BE"] # optional; device(s) to scope to (see below). Omit for a whole network.
 wol       = true                 # optional; enable Wake-on-LAN reflection (default false)
 mdns      = true                 # optional; enable mDNS reflection (default false)
+mdns_services = ["_ipp._tcp"]    # optional; DNS-SD service types to reflect (see below). Omit for every service.
 ssdp      = true                 # optional; enable SSDP reflection (default false)
 dial      = true                 # optional; enable the DIAL app proxy (requires ssdp; IPv4-only; default false)
 wsd       = true                 # optional; enable WS-Discovery reflection (default false)
@@ -290,13 +291,13 @@ then optional; with none, the environment is the whole configuration. Variables 
 - `<TAG>` ties one entry's parameters together: any alphanumeric string (`1`, `2`, `TV`, …). It also
   becomes the entry's name (and thus its log label) unless a `NAME` parameter overrides it.
 - `<PARAM>` is `NAME` or any field from the entry table above (`SOURCE_IF`, `TARGET_IF`,
-  `SOURCE_PEERS`, `TARGET_PEERS`, `MACS`, `WOL`, `MDNS`, `SSDP`, `WSD`, `DIAL`, `WOL_PORTS`,
+  `SOURCE_PEERS`, `TARGET_PEERS`, `MACS`, `WOL`, `MDNS`, `MDNS_SERVICES`, `SSDP`, `WSD`, `DIAL`, `WOL_PORTS`,
   `ADDRESS_FAMILY`, `BIDIRECTIONAL`, `UDP_PORTS`, `UDP_GROUPS`, `UDP_BROADCAST`), case-insensitive.
 
 The globals are `NETFLECTOR_LOG_LEVEL`, `NETFLECTOR_DEBUG_MEMORY_INTERVAL_SECS`, and
 `NETFLECTOR_COUNTERS_INTERVAL_SECS`, so `LOG`, `DEBUG`, and `COUNTERS` are reserved tags. Booleans are
-`true`/`false` or `1`/`0`; `WOL_PORTS`, `UDP_PORTS`, `UDP_GROUPS`, `SOURCE_PEERS`, `TARGET_PEERS`
-and `MACS` are comma-separated (`7,9` / `B0:...,C4:...`). The `[reflectors.tv]` entry above looks like
+`true`/`false` or `1`/`0`; `WOL_PORTS`, `UDP_PORTS`, `UDP_GROUPS`, `SOURCE_PEERS`, `TARGET_PEERS`,
+`MDNS_SERVICES` and `MACS` are comma-separated (`7,9` / `B0:...,C4:...`). The `[reflectors.tv]` entry above looks like
 this in the environment:
 
 ```sh
@@ -341,6 +342,26 @@ devices:
 Omit `macs` for a network-level entry: WoL proxies every valid magic packet, and mDNS/SSDP/WSD relay
 every device's traffic rather than a chosen set (only the message kinds the corresponding direction
 allows, per the table below).
+
+### The `mdns_services` field
+
+`mdns_services` scopes an mDNS entry to DNS-SD service types, where `macs` scopes it to devices: with
+`mdns_services = ["_ipp._tcp", "_airplay._tcp"]`, printers and AirPlay targets are reflected and
+nothing else the far side advertises. A type is `_<service>._tcp` or `_<service>._udp`, matched
+case-insensitively; a trailing `.local` is accepted and dropped. Omit the field to reflect every
+service. A record falls under the service type named nearest the domain in its name (for a PTR, the
+name it points to); address records, reverse lookups and the DNS-SD meta-names fall under none, and
+never count against a message.
+
+- **Queries** (source → target) are relayed unless every question names a service outside the list.
+- **Responses** (target → source) naming only services outside the list are dropped, their address
+  records with them. A response naming both is re-emitted with the refused records removed, the one
+  case where mDNS is not relayed verbatim. Devices commonly bundle several services in one message, so the
+  trim is what keeps a refused service from riding along.
+- A message that cannot be parsed is dropped whenever the list is set.
+
+The list composes with `macs` (both must admit a response) and with `address_family`. Refusals are
+logged at `debug` and counted as `filtered`.
 
 ### `address_family`
 
@@ -398,7 +419,8 @@ matching and forwarded as-is. A wake sent to the source segment's directed broad
 netflector's own address, is re-emitted to the target segment's directed broadcast (to
 `255.255.255.255` while the target's prefix is unknown); one sent to `255.255.255.255` stays a
 limited broadcast. mDNS responses include unsolicited announcements (so they flow
-target→source too); mDNS/SSDP/WSD datagrams are re-emitted verbatim to the same group (mDNS at hop
+target→source too); mDNS/SSDP/WSD datagrams are re-emitted verbatim (save an mDNS response trimmed
+by [`mdns_services`](#the-mdns_services-field)) to the same group (mDNS at hop
 limit 255, SSDP at 2, WSD at 1).
 A site-local SSDP group (`ff05::c`) is sourced from a routable address when the interface has one. With
 only a link-local address it is sourced from that, which still reaches the attached segment but will
