@@ -12,19 +12,27 @@
 //! Limitation: a legacy querier asking from an ephemeral port expects its answer there, but the
 //! relayed query is sourced from port 5353, so the device answers on the group, which that
 //! querier does not listen on.
+//!
+//! An entry's `mdns_services` allow-list gates both legs after the direction check: a query goes
+//! out unless every question names a refused service, and a response is dropped when it names
+//! services and none is allowed. A response naming both is re-emitted trimmed of the refused
+//! records ([`Trimmer`]), the one place the relay is not verbatim.
 
 use std::net::SocketAddr;
 
 use crate::config::Reflector;
-use crate::dispatch::{Filter, IpSet, MessageType, PacketDispatcher};
+use crate::dispatch::{CaptureKey, Filter, IpSet, MessageType, PacketDispatcher};
+use crate::net::mdns::services::{Scope, ServiceList, Trimmer, scope};
 use crate::net::mdns::{
     MDNS_GROUP_V4, MDNS_GROUP_V6, MDNS_PORT, MDNS_TTL, MdnsKind, advertises_only_unreachable,
     classify,
 };
+use crate::net::packet::Packet;
+use crate::reactor::Reactor;
 
 use super::{
-    BuildError, Delivery, Emit, InterfaceMap, SimpleReflector, Verdict, directional_verdict,
-    group_addrs, open_pair,
+    BuildError, Classify, Delivery, Emit, InterfaceMap, NoRewrite, ReplyRewrite, SimpleReflector,
+    Verdict, directional_verdict, group_addrs, open_pair,
 };
 
 impl From<MdnsKind> for MessageType {
@@ -36,12 +44,61 @@ impl From<MdnsKind> for MessageType {
     }
 }
 
-fn query_verdict(payload: &[u8]) -> Verdict {
-    directional_verdict(classify(payload), MdnsKind::Query)
+/// One leg's ingress gate: the direction check, then the entry's allow-list.
+struct Gate {
+    kind: MdnsKind,
+    services: Option<ServiceList>,
 }
 
-fn response_verdict(payload: &[u8]) -> Verdict {
-    directional_verdict(classify(payload), MdnsKind::Response)
+impl Gate {
+    fn new(kind: MdnsKind, services: Option<ServiceList>) -> Self {
+        Self { kind, services }
+    }
+
+    fn verdict(&self, payload: &[u8]) -> Verdict {
+        let verdict = directional_verdict(classify(payload), self.kind);
+        match (verdict, &self.services) {
+            (Verdict::Reflect(message_type), Some(services)) => match scope(payload, services) {
+                Scope::Refuse => Verdict::Refused(message_type),
+                Scope::Malformed => Verdict::Junk,
+                Scope::Pass | Scope::Trim => verdict,
+            },
+            _ => verdict,
+        }
+    }
+}
+
+impl Classify for Gate {
+    fn classify(&self, packet: &Packet) -> Verdict {
+        let verdict = self.verdict(packet.payload);
+        if let Verdict::Refused(_) = verdict {
+            log::debug!(
+                "mDNS: not reflecting {:?} from {}: it names only services outside mdns_services",
+                self.kind,
+                packet.source
+            );
+        }
+        verdict
+    }
+}
+
+/// The response leg's trim of a mixed response; see [`Trimmer`].
+struct ServiceTrim(Trimmer);
+
+impl ReplyRewrite for ServiceTrim {
+    fn rewrite<'a>(
+        &'a mut self,
+        payload: &[u8],
+        _egress: CaptureKey,
+        _dispatcher: &mut PacketDispatcher,
+        _reactor: &mut Reactor,
+    ) -> Option<&'a [u8]> {
+        self.0.trim(payload)
+    }
+
+    fn keeps_advertised_addresses(&self) -> bool {
+        true
+    }
 }
 
 /// # Errors
@@ -51,9 +108,9 @@ pub(crate) fn build(
     interfaces: &InterfaceMap,
     dispatcher: &mut PacketDispatcher,
 ) -> Result<(), BuildError> {
-    if !reflector.mdns {
+    let Some(mdns) = &reflector.mdns else {
         return Ok(());
-    }
+    };
     let groups = group_addrs(
         reflector.address_family,
         MDNS_PORT,
@@ -75,7 +132,7 @@ pub(crate) fn build(
             Delivery::new(reflector.target_peers.as_ref()),
             "mDNS",
             "query",
-            query_verdict,
+            Gate::new(MdnsKind::Query, mdns.services.clone()),
             Emit::fixed(MDNS_PORT, MDNS_TTL),
         )),
     );
@@ -100,9 +157,13 @@ pub(crate) fn build(
                 Delivery::new(reflector.source_peers.as_ref()),
                 "mDNS",
                 "response",
-                response_verdict,
+                Gate::new(MdnsKind::Response, mdns.services.clone()),
                 Emit::fixed(MDNS_PORT, MDNS_TTL).unicast_to_group(MDNS_GROUP_V4, MDNS_GROUP_V6),
             )
+            .with_rewrite(match &mdns.services {
+                Some(services) => Box::new(ServiceTrim(Trimmer::new(services.clone()))),
+                None => Box::new(NoRewrite),
+            })
             // Queries carry no advertisement, so only this leg checks.
             .with_suppress(advertises_only_unreachable),
         ),
@@ -120,29 +181,119 @@ pub(crate) fn build(
 mod tests {
     use super::*;
 
+    /// `text` in wire form, uncompressed.
+    fn name(text: &str) -> Vec<u8> {
+        let mut wire = Vec::new();
+        for label in text.split('.') {
+            wire.push(u8::try_from(label.len()).unwrap());
+            wire.extend_from_slice(label.as_bytes());
+        }
+        wire.push(0);
+        wire
+    }
+
+    /// A query with one PTR question for `question`.
+    fn ptr_query(question: &str) -> Vec<u8> {
+        let mut m = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        m.extend(name(question));
+        m.extend_from_slice(&[0, 12, 0, 1]);
+        m
+    }
+
+    /// A response with one PTR answer per `(owner, target)`.
+    fn ptr_response(answers: &[(&str, &str)]) -> Vec<u8> {
+        let mut m = vec![
+            0,
+            0,
+            0x84,
+            0,
+            0,
+            0,
+            0,
+            u8::try_from(answers.len()).unwrap(),
+            0,
+            0,
+            0,
+            0,
+        ];
+        for (owner, target) in answers {
+            m.extend(name(owner));
+            m.extend_from_slice(&[0, 12, 0, 1, 0, 0, 0, 120]);
+            let rdata = name(target);
+            m.extend_from_slice(&u16::try_from(rdata.len()).unwrap().to_be_bytes());
+            m.extend(rdata);
+        }
+        m
+    }
+
     #[test]
     fn verdicts_gate_by_direction() {
         // A 12-byte DNS header: QR bit (offset 2, 0x80) clear = query, set = response; shorter = junk.
         let query = [0u8; 12];
         let mut response = [0u8; 12];
         response[2] = 0x80;
+        let queries = Gate::new(MdnsKind::Query, None);
+        let responses = Gate::new(MdnsKind::Response, None);
         assert_eq!(
-            query_verdict(&query),
+            queries.verdict(&query),
             Verdict::Reflect(MessageType::MdnsQuery)
         );
         assert_eq!(
-            query_verdict(&response),
+            queries.verdict(&response),
             Verdict::Skip(MessageType::MdnsResponse)
         );
-        assert_eq!(query_verdict(&[0u8; 4]), Verdict::Junk);
+        assert_eq!(queries.verdict(&[0u8; 4]), Verdict::Junk);
         assert_eq!(
-            response_verdict(&query),
+            responses.verdict(&query),
             Verdict::Skip(MessageType::MdnsQuery)
         );
         assert_eq!(
-            response_verdict(&response),
+            responses.verdict(&response),
             Verdict::Reflect(MessageType::MdnsResponse)
         );
-        assert_eq!(response_verdict(&[0u8; 4]), Verdict::Junk);
+        assert_eq!(responses.verdict(&[0u8; 4]), Verdict::Junk);
+    }
+
+    #[test]
+    fn the_allow_list_excludes_what_names_only_refused_services() {
+        let services: Option<ServiceList> = Some("_ipp._tcp".parse().unwrap());
+        let queries = Gate::new(MdnsKind::Query, services.clone());
+        let responses = Gate::new(MdnsKind::Response, services);
+        assert_eq!(
+            queries.verdict(&ptr_query("_hap._tcp.local")),
+            Verdict::Refused(MessageType::MdnsQuery)
+        );
+        assert_eq!(
+            queries.verdict(&ptr_query("_ipp._tcp.local")),
+            Verdict::Reflect(MessageType::MdnsQuery)
+        );
+        assert_eq!(
+            responses.verdict(&ptr_response(&[("_hap._tcp.local", "L._hap._tcp.local")])),
+            Verdict::Refused(MessageType::MdnsResponse)
+        );
+        // A message the allow-list cannot walk is junk, not a refusal of some service.
+        let mut truncated = ptr_response(&[("_ipp._tcp.local", "L._ipp._tcp.local")]);
+        truncated.truncate(truncated.len() - 3);
+        assert_eq!(responses.verdict(&truncated), Verdict::Junk);
+        // A mixed response is reflected; the trim takes the refused records out.
+        let mixed = ptr_response(&[
+            ("_hap._tcp.local", "L._hap._tcp.local"),
+            ("_ipp._tcp.local", "L._ipp._tcp.local"),
+        ]);
+        assert_eq!(
+            responses.verdict(&mixed),
+            Verdict::Reflect(MessageType::MdnsResponse)
+        );
+        // The direction gate runs first: a refused query on the response leg is still a Skip.
+        assert_eq!(
+            responses.verdict(&ptr_query("_hap._tcp.local")),
+            Verdict::Skip(MessageType::MdnsQuery)
+        );
+    }
+
+    #[test]
+    fn a_trim_keeps_the_unreachable_advertisement_check() {
+        let trim = ServiceTrim(Trimmer::new("_ipp._tcp".parse().unwrap()));
+        assert!(trim.keeps_advertised_addresses());
     }
 }

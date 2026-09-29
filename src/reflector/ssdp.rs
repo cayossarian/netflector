@@ -75,6 +75,11 @@ impl ReplyRewrite for DialRewrite {
             None
         }
     }
+    /// The rewritten LOCATION names our own egress-side listener, reachable from that link
+    /// whatever its address class.
+    fn keeps_advertised_addresses(&self) -> bool {
+        false
+    }
 }
 
 impl From<SsdpKind> for MessageType {

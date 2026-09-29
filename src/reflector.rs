@@ -45,6 +45,10 @@ pub(crate) enum Verdict {
     /// Recognized but configured out (a wake for a device outside the allow-set); the classifier
     /// already logged why.
     Excluded,
+    /// The right direction, refused by the entry's policy (a message naming only services outside
+    /// `mdns_services`); the classifier already logged why. Counted as dropped, like a suppression,
+    /// so the skips other legs report for the same packet cannot hide it.
+    Refused(MessageType),
     /// Not a recognizable protocol message; the handler logs the drop.
     Junk,
 }
@@ -117,9 +121,41 @@ pub(crate) trait ReplyRewrite {
         dispatcher: &mut PacketDispatcher,
         reactor: &mut Reactor,
     ) -> Option<&'a [u8]>;
+
+    /// Whether a payload this rewrite replaced still advertises the far link's own addresses, so
+    /// the unreachable-advertisement check applies to it as to a verbatim one. Fails closed: a
+    /// rewrite that splices in our own listener, as DIAL's does, opts out.
+    fn keeps_advertised_addresses(&self) -> bool {
+        true
+    }
 }
 
 pub(crate) struct NoRewrite;
+
+#[cfg(test)]
+mod rewrite_default_tests {
+    use super::*;
+
+    struct Unspecified;
+
+    impl ReplyRewrite for Unspecified {
+        fn rewrite<'a>(
+            &'a mut self,
+            _: &[u8],
+            _: CaptureKey,
+            _: &mut PacketDispatcher,
+            _: &mut Reactor,
+        ) -> Option<&'a [u8]> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_rewrite_keeps_the_unreachable_check_unless_it_opts_out() {
+        // Fail closed: a new rewrite that forgets the question still has its output checked.
+        assert!(Unspecified.keeps_advertised_addresses());
+    }
+}
 
 impl ReplyRewrite for NoRewrite {
     fn rewrite<'a>(
