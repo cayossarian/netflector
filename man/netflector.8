@@ -8,6 +8,7 @@
 .Nm
 .Op Fl -check-config
 .Op Fl -no-join
+.Op Fl -user Ar user Ns Op : Ns Ar group
 .Op Fl -
 .Op Ar config
 .Nm
@@ -60,6 +61,20 @@ Group traffic then reaches
 only where the link delivers it without a membership, as an emulated or
 promiscuous fabric does.
 A warning is logged at startup.
+.It Fl -user Ar user Ns Op : Ns Ar group
+Switch to this account once every capture is open, supplementary groups
+cleared.
+Each part is a name or a number; a
+.Ar user
+without a
+.Ar group
+takes its account's group, and root is refused.
+Only opening the captures needs privilege: a recreated interface is
+re-attached to the descriptor already held, not reopened.
+.Nm
+refuses to run if root could be regained after the switch.
+Ignored with
+.Fl -check-config .
 .It Fl V , Fl -version
 Print the version and exit.
 .It Fl h , Fl -help
@@ -173,6 +188,14 @@ service.
 .Va netflector_carp_interface
 scopes the check to the interface carrying the group, needed only when the
 same vhid runs on more than one interface.
+.Pp
+.Va netflector_uid
+names the account the service passes to
+.Fl -user ,
+by default
+.Ql netflector ,
+which the package creates.
+Set it empty to keep root.
 .Sh DIAGNOSTICS
 A warning whose cause can recur per packet (a failing send, an oversized
 frame) is logged at most once per minute; occurrences inside the window are

@@ -53,7 +53,7 @@ pinned in `ci/freebsd14.env` and running on that release or newer.
 ## Run
 
 ```sh
-netflector [--check-config] [--no-join] [--] [config.toml]
+netflector [--check-config] [--no-join] [--user USER[:GROUP]] [--] [config.toml]
 ```
 
 Configuration comes from a TOML file, from environment variables, or from both. With a path argument
@@ -70,6 +70,9 @@ volumes.
 - `--no-join`: Do not join multicast groups. Group traffic then reaches netflector only where the
   link delivers it without a membership, as an emulated or promiscuous fabric does. A warning is
   logged at startup.
+- `--user USER[:GROUP]`: Switch to this account, by name or number, once every capture is open (see
+  [Runtime privileges](#runtime-privileges)). A USER without a GROUP takes its account's group; root
+  is refused as a target.
 - `-V`, `--version`: Print the version and exit.
 - `-h`, `--help`: Print the usage and exit.
 - `--`: End of options. Needed only for a config file whose name begins with a dash.
@@ -89,6 +92,11 @@ netflector opens one L2 packet-capture socket per interface: it both observes in
 re-injects reflected ones through that same socket (the sender doesn't bind a port, so no port
 privileges are involved). mDNS, SSDP, and WSD additionally join their multicast group(s) on it, which
 needs no privilege beyond opening the socket. That capture socket drives the requirements below.
+
+Only opening the captures needs the privilege. Everything after runs on the descriptors they hold (a
+recreated interface is re-attached, not reopened), so `--user` switches the process to an ordinary
+account before it reflects anything, supplementary groups cleared, and refuses to run if root could
+be regained. Started as root with `--user`, netflector parses what it captures unprivileged.
 
 #### Linux
 
@@ -117,9 +125,11 @@ Log out and back in after installing for the group membership to take effect.
 
 Capture and injection use BPF (`/dev/bpf*`), like macOS. FreeBSD has no `IP_BOUND_IF`, so the DIAL
 proxy's connect pins its interface by binding the source address; no port privileges are needed. BPF
-devices are root-only by default, so out of the box netflector must run as root. To run
-unprivileged, grant a group read/write on `/dev/bpf*` with a devfs ruleset (`/etc/devfs.rules` +
-`devfs_system_ruleset` in `/etc/rc.conf`) and add the user to that group.
+devices are root-only by default, so netflector starts as root; the rc service then passes
+`--user netflector`, an account the package creates, so the daemon drops root once its captures are
+open (`netflector_uid` in `rc.conf` names another account, or an empty one keeps root). Granting a
+group `/dev/bpf*` with a devfs ruleset also works, but lets that group capture on every interface,
+where a dropped daemon holds only the captures it opened.
 
 ### Run in Docker
 

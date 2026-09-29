@@ -17,6 +17,8 @@ USES=		cargo
 USE_GITHUB=	yes
 
 USE_RC_SUBR=	netflector
+USERS=		netflector
+GROUPS=		netflector
 CARGO_CRATES=	equivalent-1.0.2 \
 		hashbrown-0.17.1 \
 		indexmap-2.14.0 \
