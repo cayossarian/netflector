@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use crate::error::UsageError;
+use crate::privileges::RunAs;
 
 /// What the command line asked for.
 #[derive(Debug, PartialEq, Eq)]
@@ -12,6 +13,7 @@ pub(crate) enum Invocation<'a> {
     Run {
         path: Option<&'a Path>,
         join_groups: bool,
+        user: Option<RunAs>,
     },
     CheckConfig(Option<&'a Path>),
     Help,
@@ -24,14 +26,16 @@ pub(crate) enum Invocation<'a> {
 /// parsing, so a config path that starts with a dash stays reachable.
 ///
 /// # Errors
-/// [`UsageError`] for an unknown option or a second positional.
+/// [`UsageError`] for an unknown option, a second positional, or a bad `--user`.
 pub(crate) fn parse(args: &[OsString]) -> Result<Invocation<'_>, UsageError> {
     let mut check = false;
     let mut join_groups = true;
+    let mut user = None;
     let mut path: Option<&Path> = None;
     let mut options_done = false;
 
-    for arg in args {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
         if !options_done {
             if arg == "--" {
                 options_done = true;
@@ -51,6 +55,15 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Invocation<'_>, UsageError> {
                 join_groups = false;
                 continue;
             }
+            if arg == "--user" {
+                let value = args.next().ok_or(UsageError::MissingValue("--user"))?;
+                let text = value.to_string_lossy();
+                user = Some(
+                    text.parse()
+                        .map_err(|_| UsageError::BadUser(text.into_owned()))?,
+                );
+                continue;
+            }
         }
         // A lone "-" stays a path (stdin by convention).
         let text = arg.to_string_lossy();
@@ -66,7 +79,11 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Invocation<'_>, UsageError> {
     Ok(if check {
         Invocation::CheckConfig(path)
     } else {
-        Invocation::Run { path, join_groups }
+        Invocation::Run {
+            path,
+            join_groups,
+            user,
+        }
     })
 }
 
@@ -79,7 +96,7 @@ pub(crate) const HELP: &str = concat!(
 Reflects link-local service traffic (Wake-on-LAN, mDNS, SSDP, WS-Discovery, DIAL) between
 two network interfaces.
 
-usage: netflector [--check-config] [--no-join] [--] [CONFIG]
+usage: netflector [--check-config] [--no-join] [--user USER[:GROUP]] [--] [CONFIG]
 
   CONFIG           TOML config file. NETFLECTOR_* environment variables are merged on top of
                    it. Omit it to configure from the environment alone. Put `--` first if the
@@ -91,6 +108,10 @@ usage: netflector [--check-config] [--no-join] [--] [CONFIG]
   --no-join        Do not join multicast groups. Group traffic then reaches netflector only
                    where the link delivers it without a membership, as an emulated or
                    promiscuous fabric does.
+  --user USER[:GROUP]
+                   Switch to this account, by name or number, once every capture is open. Only
+                   startup needs root, so the rest of the run does without it. A USER without
+                   a GROUP takes its account's group.
   -V, --version    Print the version and exit.
   -h, --help       Print this help and exit.
 "
@@ -108,7 +129,40 @@ mod tests {
         Invocation::Run {
             path: path.map(Path::new),
             join_groups: true,
+            user: None,
         }
+    }
+
+    #[test]
+    fn user_takes_the_next_argument_as_the_account() {
+        let a = args(&["--user", "netflector", "netflector.toml"]);
+        assert_eq!(
+            parse(&a).unwrap(),
+            Invocation::Run {
+                path: Some(Path::new("netflector.toml")),
+                join_groups: true,
+                user: Some("netflector".parse().unwrap()),
+            }
+        );
+        // Config validation never switches accounts, so it takes the flag and ignores it: an rc
+        // script can pass the same arguments to both.
+        let c = args(&["--check-config", "--user", "netflector", "netflector.toml"]);
+        assert_eq!(
+            parse(&c).unwrap(),
+            Invocation::CheckConfig(Some(Path::new("netflector.toml")))
+        );
+    }
+
+    #[test]
+    fn user_needs_a_valid_account() {
+        assert!(matches!(
+            parse(&args(&["--user"])),
+            Err(UsageError::MissingValue("--user"))
+        ));
+        assert!(matches!(
+            parse(&args(&["--user", "a:b:c"])),
+            Err(UsageError::BadUser(value)) if value == "a:b:c"
+        ));
     }
 
     #[test]
@@ -124,6 +178,7 @@ mod tests {
             Invocation::Run {
                 path: Some(Path::new("netflector.toml")),
                 join_groups: false,
+                user: None,
             }
         );
     }
@@ -211,6 +266,7 @@ mod tests {
         for flag in [
             "--check-config",
             "--no-join",
+            "--user",
             "--version",
             "-V",
             "--help",

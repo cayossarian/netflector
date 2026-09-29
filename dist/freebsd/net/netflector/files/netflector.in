@@ -14,6 +14,7 @@
 #   netflector_flags="-r"                          # options for daemon(8), e.g. restart on exit
 #   netflector_carp_vhid="1"                       # only start if this CARP vhid is MASTER
 #   netflector_carp_interface="em0"                # interface holding it; needed if the vhid is reused
+#   netflector_uid="netflector"                    # account to drop to once the captures open; "" keeps root
 
 . /etc/rc.subr
 
@@ -27,6 +28,8 @@ load_rc_config $name
 : ${netflector_config:="%%PREFIX%%/etc/netflector.toml"}
 : ${netflector_carp_vhid:=""}
 : ${netflector_carp_interface:=""}
+# Not ${name}_user: rc.subr would switch accounts before start, and the captures need root to open.
+: ${netflector_uid="netflector"}
 
 # The pidfile must hold daemon(8) itself (-P), not the child: stop then terminates the supervisor,
 # which forwards the signal and exits. Killing only the child would let a restarting supervisor
@@ -40,7 +43,7 @@ netflector_bin="%%PREFIX%%/bin/${name}"
 # inherited: without it the supervisor holds the caller's stdout open for the service's lifetime, so
 # `ssh host service netflector start` never returns. It does not affect -S, which redirects the child.
 command="/usr/sbin/daemon"
-command_args="-f -S -T ${name} -P ${pidfile} -p ${child_pidfile} ${netflector_bin} '${netflector_config}'"
+command_args="-f -S -T ${name} -P ${pidfile} -p ${child_pidfile} ${netflector_bin} ${netflector_uid:+--user ${netflector_uid}} '${netflector_config}'"
 
 start_precmd="${name}_precmd"
 extra_commands="report"
