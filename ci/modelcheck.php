@@ -177,6 +177,12 @@ foreach (
     }
 }
 
+/* in a list of tokens, the refusal names the one to fix */
+$named = implode(' ', service_messages('_ipp._tcp,printer.local,_hap._tcp'));
+if (!str_contains($named, 'printer.local') || str_contains($named, '_hap._tcp')) {
+    fail(sprintf('mdns_services refusal does not name printer.local alone: %s', $named));
+}
+
 /* the relay's and the peers' fields, and the one rule between them */
 function entry_messages(array $values): array
 {
