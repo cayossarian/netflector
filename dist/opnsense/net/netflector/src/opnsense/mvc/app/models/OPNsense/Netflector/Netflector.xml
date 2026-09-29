@@ -80,7 +80,7 @@
                 </mdns>
                 <mdns_services type=".\ServiceTypeField">
                     <AsList>Y</AsList>
-                    <ValidationMessage>Enter DNS-SD service types, such as _ipp._tcp.</ValidationMessage>
+                    <ValidationMessage>[%s] is not a DNS-SD service type, such as _ipp._tcp.</ValidationMessage>
                 </mdns_services>
                 <ssdp type="BooleanField">
                     <Default>0</Default>

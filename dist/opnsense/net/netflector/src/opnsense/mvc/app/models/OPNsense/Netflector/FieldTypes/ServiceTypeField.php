@@ -44,7 +44,7 @@ class ServiceTypeField extends BaseSetField
 
     protected function defaultValidationMessage()
     {
-        return gettext('Enter DNS-SD service types, such as _ipp._tcp.');
+        return gettext('[%s] is not a DNS-SD service type, such as _ipp._tcp.');
     }
 
     public function getValidators()
@@ -54,7 +54,8 @@ class ServiceTypeField extends BaseSetField
             $validators[] = new CallbackValidator(["callback" => function ($data) {
                 foreach ($this->iterateInput($data) as $type) {
                     if (!preg_match('/^_[a-z0-9_-]{1,62}\._(tcp|udp)(\.local)?\.?$/i', $type)) {
-                        return [$this->getValidationMessage()];
+                        /* name the token to fix; core fills the message's %s, as for HostnameField */
+                        return [$this->getValidationMessage($type)];
                     }
                 }
                 return [];
