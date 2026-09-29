@@ -36,6 +36,26 @@ Default
 .Cm trace
 is compiled out of this build and behaves as
 .Cm debug .
+.It Ic user
+The account to run as once the captures are open:
+.Ar user
+or
+.Sm off
+.Ar user : Ar group ,
+.Sm on
+each a name or a number.
+A
+.Ar user
+without a
+.Ar group
+takes its account's group, and root is refused.
+Started as root,
+.Xr netflector 8
+switches to it before reflecting anything; see there for the capabilities it
+keeps on Linux.
+.Fl -check-config
+checks only the form; the account is looked up at startup.
+Absent, the starting account is kept.
 .It Ic debug_memory_interval_secs
 Seconds between memory (peak RSS) diagnostic reports.
 .Cm 0
@@ -257,11 +277,12 @@ Case-insensitive.
 .Pp
 The globals are
 .Ev NETFLECTOR_LOG_LEVEL ,
+.Ev NETFLECTOR_USER ,
 .Ev NETFLECTOR_DEBUG_MEMORY_INTERVAL_SECS ,
 and
 .Ev NETFLECTOR_COUNTERS_INTERVAL_SECS ,
 so
-.Cm LOG , DEBUG ,
+.Cm LOG , USER , DEBUG ,
 and
 .Cm COUNTERS
 are reserved tags.

@@ -25,8 +25,30 @@ configuration.
 .Pp
 The daemon runs in the foreground and logs to standard error with UTC
 timestamps.
-It opens raw captures on the configured interfaces, so it normally runs as
-root.
+It opens raw captures on the configured interfaces, so it starts as root; with
+the
+.Ic user
+setting
+.Pq Xr netflector.toml 5
+it switches to that account once they are open, supplementary groups cleared,
+and refuses to run if root could be regained.
+Nothing after startup needs root: a recreated interface is re-attached to the
+capture already held, not reopened.
+On Linux it also keeps no capability except
+.Dv CAP_NET_RAW ,
+and that only where the kernel still needs it to pin DIAL connections to their
+interface (kernels before 5.7, unless the change was backported); it tries the
+pin at startup to find out and logs which way it went.
+A non-root start with file capabilities goes through the same step when
+.Ic user
+names that account.
+The switch needs
+.Dv CAP_SETUID
+and
+.Dv CAP_SETGID ;
+where a container runtime withholds them,
+.Nm
+exits at startup naming the one it lacks.
 .Pp
 .Nm
 adapts to interface changes at runtime, with no restart needed.

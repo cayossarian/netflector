@@ -354,6 +354,32 @@ fn full_reflector_parses() {
 }
 
 #[test]
+fn user_parses_its_form_only() {
+    let toml = |line: &str| {
+        format!(
+            r#"
+                {line}
+                [reflectors.d]
+                source_if = "a"
+                target_if = "b"
+                mdns = true
+                "#
+        )
+    };
+    assert_eq!(
+        from_toml(&toml(r#"user = "netflector:nogroup""#))
+            .unwrap()
+            .user,
+        Some("netflector:nogroup".parse().unwrap())
+    );
+    assert_eq!(from_toml(&toml("")).unwrap().user, None);
+    // An account no host has still loads: the lookup belongs to startup, not to the config.
+    assert!(from_toml(&toml(r#"user = "no-such-user-nf""#)).is_ok());
+    assert!(from_toml(&toml(r#"user = "a:b:c""#)).is_err());
+    assert!(from_toml(&toml(r#"user = """#)).is_err());
+}
+
+#[test]
 fn counter_interval_parses_and_zero_disables() {
     // A positive interval becomes a Duration; 0 disables it, as does omitting the key.
     let toml = |secs: &str| {

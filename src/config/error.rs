@@ -8,7 +8,8 @@ use thiserror::Error;
 
 use super::conflict::Protocol;
 use super::value::{
-    ParseAddressFamilyError, ParseLogLevelError, ParseReflectorNameError, ReflectorName,
+    ParseAddressFamilyError, ParseLogLevelError, ParseReflectorNameError, ParseRunAsError,
+    ReflectorName,
 };
 use crate::interface::{InterfaceName, ParseInterfaceNameError};
 use crate::net::mac::MacAddr;
@@ -125,7 +126,7 @@ pub(crate) enum ConfigError {
     EnvInvalidTag { var: String, tag: String },
 
     #[error(
-        "environment variable \"{var}\" uses a reserved tag (log, debug, and counters are globals)"
+        "environment variable \"{var}\" uses a reserved tag (log, debug, counters, and user are globals)"
     )]
     EnvReservedTag { var: String },
 
@@ -191,6 +192,8 @@ pub(crate) enum ParseValueError {
     Addresses(#[from] ListError<IpAddr>),
     #[error(transparent)]
     ReflectorName(#[from] ParseReflectorNameError),
+    #[error(transparent)]
+    RunAs(#[from] ParseRunAsError),
     #[error(transparent)]
     Bool(#[from] ParseBoolError),
     #[error(transparent)]

@@ -12,6 +12,7 @@ mod linear_map;
 mod logging;
 mod memory_report;
 mod net;
+mod privileges;
 mod reactor;
 mod reflector;
 mod sys;
@@ -104,6 +105,8 @@ fn reflect(path: Option<&Path>, join_groups: bool) -> Result<()> {
         );
         PacketDispatcher::without_group_joins()
     };
+    // Resolved before any capture opens, so a mistyped account fails at once.
+    let credentials = config.user.as_ref().map(privileges::resolve).transpose()?;
     let interfaces = open_captures(&config, &mut dispatcher)?;
     for reflector in &config.reflectors {
         log_mtu_info(reflector, &interfaces, &dispatcher);
@@ -136,12 +139,55 @@ fn reflect(path: Option<&Path>, join_groups: bool) -> Result<()> {
         config.debug_memory_interval,
         std::time::Instant::now(),
     )));
+    // Root was for opening the captures. Everything after runs on the descriptors they hold (a
+    // recreated interface is re-attached, not reopened), so the reactor needs no privilege.
+    if let Some(credentials) = credentials {
+        drop_privileges(credentials, &config)?;
+    }
     log::info!("running; press Ctrl-C or send SIGTERM to stop");
     reactor.run()?;
     if config.debug_memory_interval.is_some() {
         memory_report::log_report();
     }
     log::info!("stopped");
+    Ok(())
+}
+
+/// Switch to the `user` account and log how it went. On Linux, DIAL's interface pin decides
+/// whether `CAP_NET_RAW` stays; the first DIAL entry's target interface is the one probed, since
+/// the kernel's rule is the same for every interface.
+fn drop_privileges(credentials: privileges::Credentials, config: &Config) -> Result<()> {
+    let dial = config
+        .reflectors
+        .iter()
+        .find(|reflector| reflector.ssdp.is_some_and(|ssdp| ssdp.dial))
+        .map(|reflector| &reflector.target_if);
+    let outcome = privileges::drop_to(credentials, dial)?;
+    let how = match outcome.switch {
+        privileges::Switch::Dropped => "dropped root: running",
+        privileges::Switch::AlreadyThatAccount => "already running",
+    };
+    let capabilities = match outcome.dial_pin {
+        #[cfg(target_os = "linux")]
+        privileges::DialPin::KeptNetRaw => {
+            ", keeping only CAP_NET_RAW, to pin DIAL connections to their interface"
+        }
+        #[cfg(target_os = "linux")]
+        privileges::DialPin::Unprivileged => {
+            ", with no capabilities: this kernel pins DIAL connections to their interface without \
+             CAP_NET_RAW"
+        }
+        #[cfg(target_os = "linux")]
+        privileges::DialPin::NotHeld => ", with no capabilities",
+        // Only Linux gates anything on a capability.
+        privileges::DialPin::NoDial if cfg!(target_os = "linux") => ", with no capabilities",
+        privileges::DialPin::NoDial => "",
+    };
+    log::info!(
+        "{how} as uid {} gid {}{capabilities}",
+        credentials.uid,
+        credentials.gid
+    );
     Ok(())
 }
 
