@@ -58,6 +58,17 @@
         </grid_view>
     </field>
     <field>
+        <id>reflector.mdns_services</id>
+        <label>mDNS services</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <help>Reflect only these service types, such as _ipp._tcp or _airplay._tcp. Leave empty to reflect every service.</help>
+        <grid_view>
+            <visible>false</visible>
+        </grid_view>
+    </field>
+    <field>
         <id>reflector.ssdp</id>
         <label>SSDP</label>
         <type>checkbox</type>

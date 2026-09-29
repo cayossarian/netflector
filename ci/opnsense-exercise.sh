@@ -20,6 +20,9 @@ HERE="$(dirname "$0")"
 "$HERE"/freebsd-vm.sh run 'grep -q "^macs = \[\"b0:37:95:c5:60:be\", \"c4:9d:8f:11:22:33\"\]$" /usr/local/etc/netflector.toml'
 # tv and cameras predate the relay and the peers, as an upgraded firewall's entries do: bidirectional
 # on all three enabled entries, the relay's keys on roon alone.
+"$HERE"/freebsd-vm.sh run 'grep -q "^mdns_services = \[\"_ipp._tcp\", \"_AirPlay._tcp.local\"\]$" /usr/local/etc/netflector.toml'
+# A list on an entry without mDNS stays out of the file: the daemon would refuse it.
+"$HERE"/freebsd-vm.sh run 'test "$(grep -c "^mdns_services = " /usr/local/etc/netflector.toml)" = 1'
 "$HERE"/freebsd-vm.sh run 'test "$(grep -c "^bidirectional = " /usr/local/etc/netflector.toml)" = 3'
 "$HERE"/freebsd-vm.sh run 'test "$(grep -c "^udp_broadcast = " /usr/local/etc/netflector.toml)" = 1'
 "$HERE"/freebsd-vm.sh run 'grep -q "^udp_groups = \[\"239.255.90.90\"\]$" /usr/local/etc/netflector.toml'
