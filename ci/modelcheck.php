@@ -167,6 +167,12 @@ foreach (
         ['_ipp._tcp.example', false],
         ['_ipp._tcp..', false],
         ['_._tcp', false],
+        /* a newline must not slip past the end anchor */
+        ["_ipp._tcp\n,_hap._tcp", false],
+        /* the daemon refuses a repeat in any spelling, so Save does too */
+        ['_ipp._tcp,_ipps._tcp', true],
+        ['_ipp._tcp,_ipp._tcp', false],
+        ['_ipp._tcp,_IPP._tcp.local.', false],
     ] as [$services, $expect_valid]
 ) {
     $messages = service_messages($services);
@@ -181,6 +187,10 @@ foreach (
 $named = implode(' ', service_messages('_ipp._tcp,printer.local,_hap._tcp'));
 if (!str_contains($named, 'printer.local') || str_contains($named, '_hap._tcp')) {
     fail(sprintf('mdns_services refusal does not name printer.local alone: %s', $named));
+}
+$named = implode(' ', service_messages('_ipp._tcp,_hap._tcp,_IPP._tcp.local'));
+if (!str_contains($named, '[_IPP._tcp.local] repeats [_ipp._tcp]') || str_contains($named, '_hap._tcp')) {
+    fail(sprintf('mdns_services refusal does not name the repeat and what it repeats: %s', $named));
 }
 
 /* the relay's and the peers' fields, and the one rule between them */
