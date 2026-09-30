@@ -1,7 +1,7 @@
 <?php
 
 /*
- * Copyright (C) 2026 Sergii Bogomolov
+ * Copyright (C) 2026 cayossarian (Bill Flood)
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,48 +26,41 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-namespace OPNsense\Netflector\Api;
+namespace OPNsense\Netflector\FieldTypes;
 
-use OPNsense\Base\ApiMutableModelControllerBase;
+use OPNsense\Base\FieldTypes\BaseSetField;
+use OPNsense\Base\Validators\CallbackValidator;
 
-class SettingsController extends ApiMutableModelControllerBase
+/**
+ * DNS-SD service types (_ipp._tcp), as the daemon parses them: a trailing .local and dot are
+ * allowed, case is not significant. Core has no such type and a hostname lets printer.local by.
+ */
+class ServiceTypeField extends BaseSetField
 {
-    protected static $internalModelName = 'netflector';
-    protected static $internalModelClass = '\OPNsense\Netflector\Netflector';
-
-    public function searchReflectorAction()
+    public function setValue($value)
     {
-        return $this->searchBase(
-            'reflectors.reflector',
-            [
-                'enabled', 'name', 'source_if', 'target_if', 'description',
-                'wol', 'mdns', 'mdns_services', 'ssdp', 'dial', 'wsd', 'address_family',
-            ]
-        );
+        parent::setValue(trim($value));
     }
 
-    public function getReflectorAction($uuid = null)
+    protected function defaultValidationMessage()
     {
-        return $this->getBase('reflector', 'reflectors.reflector', $uuid);
+        return gettext('[%s] is not a DNS-SD service type, such as _ipp._tcp.');
     }
 
-    public function addReflectorAction()
+    public function getValidators()
     {
-        return $this->addBase('reflector', 'reflectors.reflector');
-    }
-
-    public function setReflectorAction($uuid)
-    {
-        return $this->setBase('reflector', 'reflectors.reflector', $uuid);
-    }
-
-    public function delReflectorAction($uuid)
-    {
-        return $this->delBase('reflectors.reflector', $uuid);
-    }
-
-    public function toggleReflectorAction($uuids, $enabled = null)
-    {
-        return $this->toggleBase('reflectors.reflector', $uuids, $enabled);
+        $validators = parent::getValidators();
+        if ($this->internalValue != null) {
+            $validators[] = new CallbackValidator(["callback" => function ($data) {
+                foreach ($this->iterateInput($data) as $type) {
+                    if (!preg_match('/^_[a-z0-9_-]{1,62}\._(tcp|udp)(\.local)?\.?$/i', $type)) {
+                        /* name the token to fix; core fills the message's %s, as for HostnameField */
+                        return [$this->getValidationMessage($type)];
+                    }
+                }
+                return [];
+            }]);
+        }
+        return $validators;
     }
 }
